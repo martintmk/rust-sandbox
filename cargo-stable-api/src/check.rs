@@ -171,6 +171,8 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
     command
         .current_dir(&metadata.workspace_root)
         .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .arg("rustdoc")
         .arg("--manifest-path")
         .arg(&package.manifest_path)
