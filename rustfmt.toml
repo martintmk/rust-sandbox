@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 # >>> anvil-managed: anvil-rustfmt
 edition = "2024"
 max_width = 140

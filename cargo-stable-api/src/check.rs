@@ -1,3 +1,5 @@
+// Licensed under the MIT License.
+
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -283,11 +285,13 @@ fn display_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(miri))]
     use cargo_metadata::MetadataCommand;
 
     use super::rustdoc_output_path;
 
     #[test]
+    #[cfg(not(miri))]
     fn rustdoc_output_uses_target_subdirectory() {
         let metadata = MetadataCommand::new().no_deps().exec().expect("workspace metadata");
         let package = metadata

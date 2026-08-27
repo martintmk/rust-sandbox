@@ -1,9 +1,21 @@
+# Licensed under the MIT License.
+
 [package]
 name = "sample-lib"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[package.metadata.coverage-gate]
+min-lines-percent = 0
+
+[package.metadata.ox-gen-readme]
+disable = true
 
 [dependencies]
 

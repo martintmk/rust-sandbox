@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 [package]
 name = "first-party-app"
 version = "0.1.0"

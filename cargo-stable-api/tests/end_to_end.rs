@@ -1,3 +1,7 @@
+// Licensed under the MIT License.
+
+#![cfg(not(miri))]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 

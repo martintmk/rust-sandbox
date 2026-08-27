@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 # >>> anvil-managed: anvil-imports
 import 'justfiles/anvil/mod.just'
 # <<< anvil-managed: anvil-imports

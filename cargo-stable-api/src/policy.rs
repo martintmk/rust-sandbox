@@ -1,3 +1,5 @@
+// Licensed under the MIT License.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use cargo_metadata::{DependencyKind, Metadata, Package, PackageId, TargetKind};

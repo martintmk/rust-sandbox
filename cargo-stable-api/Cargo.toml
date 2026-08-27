@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 [package]
 name = "cargo-stable-api"
 version = "0.1.0"
@@ -8,6 +10,12 @@ description = "Checks that a crate's public API only exposes stable third-party 
 readme = "README.md"
 keywords = ["api", "cargo-subcommand", "semver"]
 categories = ["development-tools", "development-tools::cargo-plugins"]
+
+[package.metadata.coverage-gate]
+min-lines-percent = 80
+
+[package.metadata.ox-gen-readme]
+disable = true
 
 [dependencies]
 anyhow = "1"

@@ -1,3 +1,5 @@
+// Licensed under the MIT License.
+
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};

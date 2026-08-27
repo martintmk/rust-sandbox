@@ -1,3 +1,7 @@
+// Licensed under the MIT License.
+
+//! Cargo command for checking public interface dependency stability.
+
 mod check;
 mod config;
 mod policy;
@@ -17,22 +21,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check public APIs for types from unstable third-party crates.
+    /// Check public interfaces for types from unstable third-party crates.
     StableApi(StableApiArgs),
 }
 
 #[derive(Clone, Debug, Args)]
 #[expect(clippy::struct_excessive_bools, reason = "CLI flags are independently represented by clap")]
 struct StableApiArgs {
-    /// Path to a package or workspace Cargo.toml.
+    /// Path to a package or Cargo manifest.
     #[arg(long)]
     manifest_path: Option<PathBuf>,
 
-    /// Check a workspace package. May be specified more than once.
+    /// Check a package. May be specified more than once.
     #[arg(short = 'p', long = "package", value_name = "SPEC", conflicts_with = "workspace")]
     packages: Vec<String>,
 
-    /// Check every library package in the workspace.
+    /// Check every library package in the project.
     #[arg(long)]
     workspace: bool,
 
@@ -57,7 +61,7 @@ struct StableApiArgs {
     #[arg(long)]
     target: Option<String>,
 
-    /// Validate a pre-1.0 or prerelease package instead of skipping it.
+    /// Validate a pre-1.0 or preview package instead of skipping it.
     #[arg(long)]
     force: bool,
 }
