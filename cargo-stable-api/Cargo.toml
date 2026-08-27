@@ -14,9 +14,6 @@ categories = ["development-tools", "development-tools::cargo-plugins"]
 [package.metadata.coverage-gate]
 min-lines-percent = 80
 
-[package.metadata.ox-gen-readme]
-disable = true
-
 [package.metadata.docs.rs]
 all-features = true
 
