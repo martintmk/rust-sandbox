@@ -16,6 +16,8 @@ use crate::config::Config;
 use crate::policy::Policy;
 use crate::{StableApiArgs, cargo_path, format_command_failure};
 
+const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-03-20";
+
 pub(crate) fn run(args: &StableApiArgs) -> Result<bool> {
     let metadata = load_metadata(args)?;
     let config = Config::from_metadata(&metadata)?;
@@ -168,6 +170,7 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
     let mut command = Command::new(cargo_path());
     command
         .current_dir(&metadata.workspace_root)
+        .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
         .arg("rustdoc")
         .arg("--manifest-path")
         .arg(&package.manifest_path)
@@ -205,7 +208,7 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
         bail!(
             "rustdoc produced JSON format version {}, but this tool requires version {}. \
              Run it with a compatible nightly toolchain (for example, \
-             `cargo +nightly-2026-03-20 stable-api`)",
+             `cargo +{RUSTDOC_TOOLCHAIN} stable-api`)",
             version.format_version,
             FORMAT_VERSION
         );

@@ -17,6 +17,9 @@ min-lines-percent = 80
 [package.metadata.ox-gen-readme]
 disable = true
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 anyhow = "1"
 cargo-check-external-types = "0.5.0"
