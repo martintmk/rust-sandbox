@@ -1,9 +1,9 @@
 // Licensed under the MIT License.
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
 use cargo_check_external_types::error::ValidationError;
@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use crate::config::Config;
 use crate::policy::Policy;
-use crate::{StableApiArgs, cargo_path, format_command_failure};
+use crate::{StableApiArgs, format_command_failure};
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-03-20";
 
@@ -167,15 +167,30 @@ struct RustdocFormatVersion {
 }
 
 fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target, args: &StableApiArgs) -> Result<Crate> {
-    let mut command = Command::new(cargo_path());
+    let target_directory = metadata.target_directory.join("stable-api-rustdoc");
+    let mut command = Command::new("rustup");
     command
         .current_dir(&metadata.workspace_root)
-        .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
+        .env_clear()
+        .envs(
+            ["HOME", "PATH", "RUSTUP_HOME", "CARGO_HOME"]
+                .into_iter()
+                .filter_map(|key| env::var_os(key).map(|value| (key, value))),
+        )
+        .arg("run")
+        .arg(RUSTDOC_TOOLCHAIN)
+        .arg("cargo")
+        .arg("rustdoc")
+        .env_remove("RUSTC")
+        .env_remove("RUSTDOC")
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
-        .arg("rustdoc")
         .arg("--manifest-path")
         .arg(&package.manifest_path)
+        .arg("--target-dir")
+        .arg(&target_directory)
         .arg("--lib");
     if args.all_features {
         command.arg("--all-features");
@@ -203,7 +218,7 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
         .with_context(|| format!("failed to run rustdoc for `{}`", package.name))?;
     format_command_failure("rustdoc", &output)?;
 
-    let output_path = rustdoc_output_path(metadata, target, args.target.as_deref());
+    let output_path = rustdoc_output_path(target_directory.as_std_path(), target, args.target.as_deref());
     let json = fs::read_to_string(&output_path).with_context(|| format!("failed to read rustdoc JSON at {}", output_path.display()))?;
     let version: RustdocFormatVersion = serde_json::from_str(&json).context("rustdoc JSON has no format_version")?;
     if version.format_version != FORMAT_VERSION {
@@ -219,8 +234,8 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
     serde_json::from_str(&json).context("failed to parse rustdoc JSON")
 }
 
-fn rustdoc_output_path(metadata: &Metadata, target: &Target, build_target: Option<&str>) -> PathBuf {
-    let mut output = PathBuf::from(metadata.target_directory.as_std_path());
+fn rustdoc_output_path(target_directory: &Path, target: &Target, build_target: Option<&str>) -> PathBuf {
+    let mut output = target_directory.to_path_buf();
     if let Some(build_target) = build_target {
         output.push(build_target);
     }
@@ -310,7 +325,7 @@ mod tests {
             .find(|target| target.name == "cargo-stable-api")
             .expect("binary target");
 
-        let output = rustdoc_output_path(&metadata, target, Some("example-target"));
+        let output = rustdoc_output_path(metadata.target_directory.as_std_path(), target, Some("example-target"));
 
         assert!(output.ends_with("example-target/doc/cargo_stable_api.json"));
     }

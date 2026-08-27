@@ -81,10 +81,6 @@ fn main() -> ExitCode {
     }
 }
 
-fn cargo_path() -> PathBuf {
-    std::env::var_os("CARGO").map_or_else(|| PathBuf::from("cargo"), PathBuf::from)
-}
-
 fn format_command_failure(operation: &str, output: &std::process::Output) -> Result<()> {
     if output.status.success() {
         return Ok(());
