@@ -12,7 +12,7 @@ keywords = ["api", "cargo-subcommand", "semver"]
 categories = ["development-tools", "development-tools::cargo-plugins"]
 
 [package.metadata.coverage-gate]
-min-lines-percent = 80
+min-lines-percent = 100
 
 [package.metadata.docs.rs]
 all-features = true

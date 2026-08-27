@@ -19,6 +19,7 @@ pub(crate) struct Policy {
 }
 
 impl Policy {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn for_package(metadata: &Metadata, root: &Package, config: &Config) -> Self {
         let workspace_members = metadata.workspace_members.iter().cloned().collect::<HashSet<_>>();
         let (reachable, aliases) = reachable_packages(metadata, &root.id);
@@ -70,6 +71,7 @@ impl Policy {
         }
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn external_types_config(&self) -> cargo_check_external_types::config::Config {
         cargo_check_external_types::config::Config {
             allowed_external_types: self
@@ -81,6 +83,7 @@ impl Policy {
         }
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn unstable_packages(&self, type_name: &str) -> &[UnstablePackage] {
         let crate_name = type_name.split("::").next().unwrap_or(type_name);
         self.blocked_crates.get(crate_name).map_or(&[], Vec::as_slice)
@@ -91,6 +94,7 @@ fn is_stable_version(version: &cargo_metadata::semver::Version) -> bool {
     version.major >= 1 && version.pre.is_empty()
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn reachable_packages(metadata: &Metadata, root: &PackageId) -> (HashSet<PackageId>, HashMap<PackageId, BTreeSet<String>>) {
     let Some(resolve) = &metadata.resolve else {
         return (HashSet::new(), HashMap::new());

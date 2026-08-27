@@ -18,6 +18,7 @@ use crate::{StableApiArgs, format_command_failure};
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-03-20";
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn run(args: &StableApiArgs) -> Result<bool> {
     let metadata = load_metadata(args)?;
     let config = Config::from_metadata(&metadata)?;
@@ -49,6 +50,7 @@ pub(crate) fn run(args: &StableApiArgs) -> Result<bool> {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn should_skip_unstable_root(metadata: &Metadata, args: &StableApiArgs) -> bool {
     if args.force || args.workspace || !args.packages.is_empty() {
         return false;
@@ -71,6 +73,7 @@ fn should_skip_unstable_root(metadata: &Metadata, args: &StableApiArgs) -> bool 
     unstable
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn load_metadata(args: &StableApiArgs) -> Result<Metadata> {
     let mut command = cargo_metadata::MetadataCommand::new();
     if let Some(manifest_path) = &args.manifest_path {
@@ -93,6 +96,7 @@ fn load_metadata(args: &StableApiArgs) -> Result<Metadata> {
     command.exec().context("failed to read Cargo metadata")
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn select_packages<'a>(metadata: &'a Metadata, args: &StableApiArgs) -> Result<Vec<&'a Package>> {
     let workspace_packages = metadata.workspace_packages();
     let selected = if !args.packages.is_empty() {
@@ -134,10 +138,12 @@ fn select_packages<'a>(metadata: &'a Metadata, args: &StableApiArgs) -> Result<V
     Ok(libraries)
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn library_target(package: &Package) -> Option<&Target> {
     package.targets.iter().find(|target| target.kind.contains(&TargetKind::Lib))
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn check_package(metadata: &Metadata, package: &Package, config: &Config, args: &StableApiArgs) -> Result<usize> {
     let target = library_target(package).expect("selected packages have library targets");
     let policy = Policy::for_package(metadata, package, config);
@@ -166,6 +172,7 @@ struct RustdocFormatVersion {
     format_version: u32,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target, args: &StableApiArgs) -> Result<Crate> {
     let target_directory = metadata.target_directory.join("stable-api-rustdoc");
     let mut command = Command::new("rustup");
@@ -234,6 +241,7 @@ fn generate_rustdoc_json(metadata: &Metadata, package: &Package, target: &Target
     serde_json::from_str(&json).context("failed to parse rustdoc JSON")
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn rustdoc_output_path(target_directory: &Path, target: &Target, build_target: Option<&str>) -> PathBuf {
     let mut output = target_directory.to_path_buf();
     if let Some(build_target) = build_target {
@@ -244,6 +252,7 @@ fn rustdoc_output_path(target_directory: &Path, target: &Target, build_target: O
     output
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_violation(error: &ValidationError, policy: &Policy) {
     let ValidationError::UnapprovedExternalTypeRef {
         type_name,
@@ -278,6 +287,7 @@ fn print_violation(error: &ValidationError, policy: &Policy) {
     eprintln!();
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_warning(error: &ValidationError) {
     eprintln!("warning: {error}");
     print_location(error.location());
@@ -288,6 +298,7 @@ fn print_warning(error: &ValidationError) {
     eprintln!();
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn print_location(location: Option<&rustdoc_types::Span>) {
     if let Some(location) = location {
         eprintln!(
@@ -299,6 +310,7 @@ fn print_location(location: Option<&rustdoc_types::Span>) {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }

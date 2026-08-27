@@ -15,6 +15,7 @@ pub(crate) struct Config {
 }
 
 impl Config {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub(crate) fn from_metadata(metadata: &Metadata) -> Result<Self> {
         let Some(section) = metadata.workspace_metadata.get(METADATA_KEY) else {
             return Ok(Self::default());

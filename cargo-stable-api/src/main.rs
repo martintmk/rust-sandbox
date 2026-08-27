@@ -2,6 +2,8 @@
 
 //! Cargo command for checking public interface dependency stability.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 mod check;
 mod config;
 mod policy;
@@ -66,6 +68,7 @@ struct StableApiArgs {
     force: bool,
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn main() -> ExitCode {
     let Cli {
         command: Command::StableApi(args),
@@ -81,6 +84,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg_attr(coverage_nightly, coverage(off))]
 fn format_command_failure(operation: &str, output: &std::process::Output) -> Result<()> {
     if output.status.success() {
         return Ok(());
