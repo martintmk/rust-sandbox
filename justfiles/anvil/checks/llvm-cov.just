@@ -74,8 +74,9 @@ anvil-llvm-cov: anvil-llvm-cov-validate-prereqs
     # back to plain `cargo nextest run` on that target so we still
     # get test execution; coverage data from this leg wouldn't have
     # been used anyway (coverage upload is gated on Linux only).
-    if ($IsWindows -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')) {
-        Write-Host 'anvil-llvm-cov: aarch64-pc-windows-msvc -- skipping coverage; running plain nextest'
+    $isArm = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64
+    if ($isArm) {
+        Write-Host 'anvil-llvm-cov: ARM host -- skipping coverage; running plain nextest'
         foreach ($cfg in $configs) {
             & cargo '+{{ rust_nightly }}' nextest run @allTestPkg $cfg.flag --no-tests=pass --locked
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
