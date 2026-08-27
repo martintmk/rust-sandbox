@@ -2,7 +2,7 @@
 
 [workspace]
 resolver = "3"
-members = ["cargo-stable-api", "sample-lib"]
+members = ["cargo-stable-api"]
 
 [workspace.package]
 edition = "2024"
