@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["sample-lib"]
+members = ["cargo-stable-api", "sample-lib"]
 
 [workspace.package]
 edition = "2024"

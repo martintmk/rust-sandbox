@@ -1,0 +1,7 @@
+[package]
+name = "stable-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+stable-dep = { path = "../stable-dep" }

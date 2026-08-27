@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "allowed-app",
+    "first-party-app",
+    "first-party-dep",
+    "stable-app",
+    "unstable-app",
+]
+exclude = ["allowed-dep", "stable-dep", "unstable-dep"]
+
+[workspace.metadata.cargo-stable-api]
+allowed-unstable-crates = ["allowed-dep"]

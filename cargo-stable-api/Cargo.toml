@@ -1,0 +1,23 @@
+[package]
+name = "cargo-stable-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Checks that a crate's public API only exposes stable third-party dependencies"
+readme = "README.md"
+keywords = ["api", "cargo-subcommand", "semver"]
+categories = ["development-tools", "development-tools::cargo-plugins"]
+
+[dependencies]
+anyhow = "1"
+cargo-check-external-types = "0.5.0"
+cargo_metadata = "0.19.2"
+clap = { version = "4.5", features = ["derive"] }
+rustdoc-types = "=0.57.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wildmatch = "2"
+
+[lints]
+workspace = true
