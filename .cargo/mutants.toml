@@ -1,0 +1,3 @@
+# The stable API checker invokes a separately pinned nightly Cargo/rustdoc
+# process, which cargo-mutants cannot reliably execute from mutation copies.
+exclude_globs = ["cargo-stable-api/src/**"]

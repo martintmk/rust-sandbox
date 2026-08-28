@@ -1,0 +1,6 @@
+# Licensed under the MIT License.
+
+[package]
+name = "unstable-dep"
+version = "0.2.0"
+edition = "2024"

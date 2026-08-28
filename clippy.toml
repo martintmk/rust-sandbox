@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 # >>> anvil-managed: anvil-clippy
 # Fine-tuning settings for clippy lints. These cannot be expressed in
 # Cargo.toml's [lints] table (which only carries level: warn/allow/deny);

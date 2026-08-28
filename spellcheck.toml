@@ -1,3 +1,5 @@
+# Licensed under the MIT License.
+
 # >>> anvil-managed: anvil-spellcheck
 # Check spelling in code comments marked as dev/developer comments
 # (e.g., `// TODO:`, `// FIXME:`). Set to false to skip them.

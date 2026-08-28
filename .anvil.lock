@@ -311,11 +311,6 @@ id = "anvil-rustfmt"
 checksum = "sha256:c21c68f3f9e46e8a958513e80ebce393d2e2ec8b90e2ded5416bca4215ffa8b7"
 
 [[region]]
-host = "sample-lib/Cargo.toml"
-id = "anvil-lints"
-checksum = "sha256:2dd7c0f21339fd17092b8dedfe924aa86732c3520baab84f914c2d8f4103ac40"
-
-[[region]]
 host = "spellcheck.toml"
 id = "anvil-spellcheck"
 checksum = "sha256:3d85d17a4e9a9a6770738b67d93a801375ffadd159e506eef81e5a9ffe1da0d7"
