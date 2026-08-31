@@ -458,9 +458,14 @@ impl DecoderBuilder {
 
     /// Sets whether consecutive streams decode as one logical stream.
     ///
-    /// Left unset, each format keeps its own default: enabled for `Format::Gzip`, matching
-    /// `gzip(1)`, and disabled for the others, where concatenation is not an established
-    /// convention.
+    /// Left unset, each format keeps its own default: enabled for `Format::Gzip` and
+    /// `Format::Zstd`, matching `gzip(1)` and the `zstd` tool, and disabled for the rest, where
+    /// concatenation is not an established convention.
+    ///
+    /// This also decides what happens to bytes trailing a complete stream. When enabled they must
+    /// themselves form another valid stream, so padding or appended data is reported as corrupt.
+    /// When disabled they are silently ignored, which means the same appended bytes are rejected
+    /// under the formats that default to enabled and accepted under those that do not.
     #[must_use]
     pub const fn concatenated(mut self, enabled: bool) -> Self {
         self.concatenated = Some(enabled);
