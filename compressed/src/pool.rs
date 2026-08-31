@@ -103,6 +103,14 @@ pub(crate) struct EngineKey {
 /// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
 /// the fixed setup cost is a comparable share of the work either way.
 ///
+/// The gzip decompressor is the one gap worth explaining, because gzip is the encoding most often
+/// seen on the wire. Nothing about gzip prevents recycling: the obstacle is only that the engine's
+/// reset cannot express gzip framing. Taking over that framing here would let gzip decoders join
+/// the pool, but it would mean owning header parsing and checksum validation permanently in order
+/// to route around someone else's API gap. That is a poor trade for a crate whose job is to stream
+/// bytes, so the gap is left where it belongs. If the engine ever gains a reset that can express
+/// gzip framing, gzip decompressors can start being pooled with no change to calling code.
+///
 /// Because this is an implementation detail rather than a contract, more engines can start being
 /// pooled without any change to calling code.
 ///
