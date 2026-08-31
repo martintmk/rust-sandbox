@@ -300,6 +300,14 @@ impl<S> DecompressStream<S> {
         Self::new(source, crate::brotli::Decoder::new(memory))
     }
 
+    /// Decompresses a zstd `source` with
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
+    #[cfg(feature = "zstd")]
+    #[must_use]
+    pub fn zstd(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::zstd::Decoder::new(memory))
+    }
+
     /// Decompresses `source` with a pre-configured decoder.
     #[must_use]
     pub fn new(source: S, decoder: impl Decoder + 'static) -> Self {
@@ -363,6 +371,43 @@ mod tests {
         let plain = collect(DecompressStream::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), payload);
+    }
+
+    /// Every format must offer both halves of the pair.
+    ///
+    /// A format that gains a `CompressStream` constructor but not the matching `DecompressStream`
+    /// one leaves callers able to write a stream they cannot read back, and the gap is invisible
+    /// until someone reaches for it. This drives each pair end to end so the omission cannot
+    /// survive a build.
+    #[test]
+    fn every_format_offers_both_stream_adapters() {
+        let payload = b"symmetric adapters ".repeat(300);
+        let chunks = || ok_stream(payload.chunks(89).map(view).collect());
+
+        macro_rules! assert_pair {
+            ($constructor:ident) => {{
+                let memory = GlobalPool::new();
+                let encoded = collect(CompressStream::$constructor(chunks(), memory.clone())).expect("compression succeeds");
+                let plain = collect(DecompressStream::$constructor(ok_stream(vec![encoded]), memory)).expect("decompression succeeds");
+
+                assert_eq!(
+                    plain.to_vec(),
+                    payload,
+                    concat!(stringify!($constructor), " failed to round trip")
+                );
+            }};
+        }
+
+        #[cfg(feature = "deflate")]
+        assert_pair!(deflate);
+        #[cfg(feature = "zlib")]
+        assert_pair!(zlib);
+        #[cfg(feature = "gzip")]
+        assert_pair!(gzip);
+        #[cfg(feature = "brotli")]
+        assert_pair!(brotli);
+        #[cfg(feature = "zstd")]
+        assert_pair!(zstd);
     }
 
     #[test]

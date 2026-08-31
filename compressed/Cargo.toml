@@ -47,7 +47,17 @@ flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] 
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
 futures-core = { version = "0.3.31", default-features = false }
 pin-project-lite = "0.2.16"
+tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-stream = { version = "0.1.19", default-features = false }
 zstd-safe = { version = "7.2.4", default-features = false, features = ["std"] }
+
+[[example]]
+name = "round_trip"
+required-features = ["brotli", "deflate", "gzip", "zlib", "zstd"]
+
+[[example]]
+name = "tokio_stream"
+required-features = ["futures-stream", "gzip"]
 
 [[bench]]
 harness = false
