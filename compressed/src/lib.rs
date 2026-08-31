@@ -80,10 +80,8 @@
 //! use bytesbuf::mem::GlobalPool;
 //! use compressed::{Format, Level};
 //!
-//! // Pick the first encoding the client offered that this build supports.
-//! let format = "br, gzip, deflate"
-//!     .split(',')
-//!     .find_map(Format::from_content_encoding)
+//! // Pick the encoding the client ranked highest among those this build supports.
+//! let format = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8, deflate;q=0.5")
 //!     .expect("no mutually supported encoding");
 //!
 //! let memory = GlobalPool::new();

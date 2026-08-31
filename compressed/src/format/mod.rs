@@ -102,12 +102,14 @@ impl Format {
         }
     }
 
-    /// Parses an HTTP `Content-Encoding` or `Accept-Encoding` token.
+    /// Parses a single HTTP `Content-Encoding` token.
     ///
     /// Matching is case-insensitive, as HTTP requires. `deflate` maps to [`Format::Zlib`], which is
     /// what the token actually denotes; `x-gzip` is accepted as a legacy alias for `gzip`. Tokens
-    /// for formats this build does not support return `None`, so a caller scanning a preference
-    /// list falls through to the next encoding the client offered.
+    /// for formats this build does not support return `None`.
+    ///
+    /// This takes one bare token. To choose an encoding from a client's `Accept-Encoding` header,
+    /// which carries a weighted list, use [`Format::from_accept_encoding`].
     #[must_use]
     pub fn from_content_encoding(token: &str) -> Option<Self> {
         let token = token.trim();
@@ -131,6 +133,63 @@ impl Format {
         let _ = token;
 
         None
+    }
+
+    /// Chooses the most preferred supported encoding from an `Accept-Encoding` header.
+    ///
+    /// Real headers are weighted lists such as `br;q=1.0, gzip;q=0.8, *;q=0.1`, so a bare token
+    /// match is not enough: this parses the quality values, discards encodings this build does not
+    /// support, and returns the acceptable one the client ranked highest. Ties keep the order the
+    /// client wrote.
+    ///
+    /// A quality of zero means the client explicitly refuses that encoding, so it is never
+    /// returned. `identity` and `*` are ignored — returning `None` simply means sending the body
+    /// uncompressed, which is always acceptable.
+    ///
+    /// ```
+    /// use compressed::Format;
+    ///
+    /// assert_eq!(
+    ///     Format::from_accept_encoding("gzip;q=0.8, deflate;q=0.5"),
+    ///     Some(Format::Gzip)
+    /// );
+    ///
+    /// // A quality of zero is a refusal, not a preference.
+    /// assert_eq!(
+    ///     Format::from_accept_encoding("gzip;q=0, deflate"),
+    ///     Some(Format::Zlib)
+    /// );
+    ///
+    /// assert_eq!(Format::from_accept_encoding("identity"), None);
+    /// ```
+    #[must_use]
+    pub fn from_accept_encoding(header: &str) -> Option<Self> {
+        let mut best: Option<(Self, u16)> = None;
+
+        for entry in header.split(',') {
+            let mut parts = entry.split(';');
+
+            let Some(format) = parts.next().and_then(Self::from_content_encoding) else {
+                continue;
+            };
+
+            // A malformed weight makes the entry unusable; skipping it is safer than guessing a
+            // preference the client did not express.
+            let Some(quality) = parse_quality(parts) else {
+                continue;
+            };
+
+            // Zero means "not acceptable", which is a refusal rather than a low ranking.
+            if quality == 0 {
+                continue;
+            }
+
+            if best.is_none_or(|(_, best_quality)| quality > best_quality) {
+                best = Some((format, quality));
+            }
+        }
+
+        best.map(|(format, _)| format)
     }
 
     /// Starts configuring an encoder for this format.
@@ -186,6 +245,50 @@ impl Format {
 
         drain(|| decoder.pull())
     }
+}
+
+/// Reads the `q=` weight from an entry's parameters, as thousandths.
+///
+/// Returns `Some(1000)` when no weight is given, since an absent quality means full preference.
+/// Returns `None` if a weight is present but malformed.
+fn parse_quality<'a>(parameters: impl Iterator<Item = &'a str>) -> Option<u16> {
+    let mut quality = 1_000;
+
+    for parameter in parameters {
+        let Some((name, value)) = parameter.split_once('=') else {
+            continue;
+        };
+
+        if !name.trim().eq_ignore_ascii_case("q") {
+            continue;
+        }
+
+        quality = parse_quality_value(value.trim())?;
+    }
+
+    Some(quality)
+}
+
+/// Parses a quality value in `0..=1` with up to three decimals, as thousandths.
+///
+/// Parsed as integers rather than a float so the ordering is exact and the accepted grammar matches
+/// what the HTTP specification actually allows.
+fn parse_quality_value(value: &str) -> Option<u16> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+
+    let whole: u16 = whole.parse().ok()?;
+    if whole > 1 || fraction.len() > 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+
+    // Pad so "5" and "500" both mean 0.5.
+    let mut thousandths = 0_u16;
+    for index in 0..3 {
+        thousandths = thousandths * 10 + u16::from(fraction.as_bytes().get(index).map_or(b'0', |byte| *byte) - b'0');
+    }
+
+    let quality = whole * 1_000 + thousandths;
+    if quality > 1_000 { None } else { Some(quality) }
 }
 
 const fn default_chunk_size() -> NonZeroUsize {
@@ -430,6 +533,83 @@ mod tests {
         // stream, not raw deflate.
         assert_eq!(Format::from_content_encoding("deflate"), Some(Format::Zlib));
         assert_eq!(Format::Deflate.content_encoding(), None);
+    }
+
+    #[cfg(all(feature = "gzip", feature = "zlib"))]
+    #[test]
+    fn accept_encoding_honours_quality_values() {
+        // Real headers are weighted; a bare token match would pick whichever came first.
+        assert_eq!(Format::from_accept_encoding("gzip;q=0.5, deflate;q=0.9"), Some(Format::Zlib));
+        assert_eq!(Format::from_accept_encoding("gzip;q=0.9, deflate;q=0.5"), Some(Format::Gzip));
+
+        // An absent weight means full preference.
+        assert_eq!(Format::from_accept_encoding("deflate;q=0.5, gzip"), Some(Format::Gzip));
+    }
+
+    #[cfg(all(feature = "gzip", feature = "zlib"))]
+    #[test]
+    fn accept_encoding_treats_zero_quality_as_a_refusal() {
+        // The trap a naive "strip the parameters" implementation falls into: q=0 means the client
+        // will not accept that encoding at all.
+        assert_eq!(Format::from_accept_encoding("gzip;q=0"), None);
+        assert_eq!(Format::from_accept_encoding("gzip;q=0.000"), None);
+        assert_eq!(Format::from_accept_encoding("gzip;q=0, deflate"), Some(Format::Zlib));
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn accept_encoding_tolerates_real_world_headers() {
+        for header in [
+            "gzip",
+            " gzip ",
+            "gzip;q=1",
+            "gzip;q=1.0",
+            "gzip ; q=1.0",
+            "GZIP;Q=1.0",
+            "identity;q=0.1, gzip;q=0.9",
+            "*;q=0.1, gzip",
+            "br;q=0.2, gzip;q=0.9",
+        ] {
+            assert_eq!(Format::from_accept_encoding(header), Some(Format::Gzip), "failed on {header:?}");
+        }
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn accept_encoding_ignores_what_it_cannot_use() {
+        assert_eq!(Format::from_accept_encoding(""), None);
+        assert_eq!(Format::from_accept_encoding("identity"), None);
+        assert_eq!(Format::from_accept_encoding("*"), None, "a wildcard names no specific encoding");
+        assert_eq!(Format::from_accept_encoding("zstd, lzma"), None, "unsupported encodings");
+
+        // A malformed weight is skipped rather than guessed at.
+        assert_eq!(Format::from_accept_encoding("gzip;q=nonsense"), None);
+        assert_eq!(Format::from_accept_encoding("gzip;q=2"), None, "quality above 1 is invalid");
+        assert_eq!(Format::from_accept_encoding("gzip;q=0.1234"), None, "more than three decimals");
+    }
+
+    #[cfg(all(feature = "gzip", feature = "zlib"))]
+    #[test]
+    fn accept_encoding_keeps_client_order_on_a_tie() {
+        assert_eq!(Format::from_accept_encoding("gzip;q=0.5, deflate;q=0.5"), Some(Format::Gzip));
+        assert_eq!(Format::from_accept_encoding("deflate;q=0.5, gzip;q=0.5"), Some(Format::Zlib));
+    }
+
+    #[test]
+    fn quality_values_parse_as_exact_thousandths() {
+        assert_eq!(parse_quality_value("1"), Some(1_000));
+        assert_eq!(parse_quality_value("1.0"), Some(1_000));
+        assert_eq!(parse_quality_value("1.000"), Some(1_000));
+        assert_eq!(parse_quality_value("0"), Some(0));
+        assert_eq!(parse_quality_value("0.5"), Some(500));
+        assert_eq!(parse_quality_value("0.05"), Some(50));
+        assert_eq!(parse_quality_value("0.005"), Some(5));
+
+        assert_eq!(parse_quality_value("1.001"), None, "above 1 is invalid");
+        assert_eq!(parse_quality_value("2"), None);
+        assert_eq!(parse_quality_value("-1"), None);
+        assert_eq!(parse_quality_value("0.abc"), None);
+        assert_eq!(parse_quality_value(""), None);
     }
 
     #[cfg(feature = "gzip")]

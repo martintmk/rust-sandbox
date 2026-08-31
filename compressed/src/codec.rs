@@ -42,7 +42,8 @@ mod sealed {
 /// concrete encoder does.
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they
-/// need, without breaking downstream code.
+/// need, without breaking downstream code. Every implementation is `Send + Sync`, so a
+/// `Box<dyn Encoder>` can be shared as well as moved between threads.
 ///
 /// ```
 /// use bytesbuf::BytesView;
@@ -71,7 +72,7 @@ mod sealed {
 /// assert_eq!(encoded.range(0..2).to_vec(), vec![0x1f, 0x8b]);
 /// # Ok::<(), compressed::Error>(())
 /// ```
-pub trait Encoder: sealed::Sealed + fmt::Debug + Send {
+pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// Supplies more uncompressed input.
     ///
     /// # Errors
@@ -100,7 +101,7 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send {
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they
 /// need, without breaking downstream code.
-pub trait Decoder: sealed::Sealed + fmt::Debug + Send {
+pub trait Decoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// Supplies more compressed input.
     ///
     /// # Errors
@@ -233,6 +234,7 @@ mod tests {
     #[test]
     fn trait_objects_are_send_and_debug() {
         fn assert_send<T: Send + ?Sized>(_: &T) {}
+        fn assert_send_sync<T: Send + Sync + ?Sized>(_: &T) {}
 
         let memory = GlobalPool::new();
         let encoder: Box<dyn Encoder> = Box::new(gzip::Encoder::new(memory.clone()));
@@ -240,6 +242,13 @@ mod tests {
 
         assert_send(&*encoder);
         assert_send(&*decoder);
+
+        // Every concrete codec is `Sync`, so the trait objects must be too: `!Sync` would stop a
+        // boxed codec being shared behind an `Arc`, and adding `Sync` later is a breaking change.
+        assert_send_sync(&*encoder);
+        assert_send_sync(&*decoder);
+        assert_send_sync(&gzip::Encoder::new(GlobalPool::new()));
+        assert_send_sync(&gzip::Decoder::new(GlobalPool::new()));
         assert!(format!("{encoder:?}").contains("Encoder"));
         assert!(format!("{decoder:?}").contains("Decoder"));
     }
