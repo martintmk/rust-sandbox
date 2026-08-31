@@ -6,86 +6,98 @@ use crate::error::{Error, Result};
 
 /// Cumulative output below this size is never rejected by the ratio guard.
 ///
-/// A gzip member carries 18 bytes of fixed header and trailer overhead, and a short member's
-/// compressed form can easily be larger than its payload. Without a floor, a legitimate two-byte
-/// member would look like an infinitely bad expansion ratio and be rejected. 32 KiB is far below
-/// any size at which a decompression bomb becomes a memory-exhaustion risk.
+/// A container carries a fixed header and trailer, and a short stream's compressed form can easily
+/// be larger than its payload. Without a floor, a legitimate two-byte stream would look like an
+/// infinitely bad expansion ratio and be rejected. 32 KiB is far below any size at which a
+/// decompression bomb becomes a memory-exhaustion risk.
 #[cfg_attr(
     all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
-    expect(dead_code, reason = "only the decoders enforce limits, and no format is enabled")
+    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
 )]
 const RATIO_FLOOR_BYTES: u64 = 32 * 1024;
 
-/// The ratio limit that suits the deflate family.
-///
-/// Deflate cannot expand its input by more than about 1032x — that is a structural property of the
-/// format, not a tuning choice — so a single deflate, zlib or gzip stream is inherently bounded.
-/// Measured worst case for 1 MiB of zeros is 1015x, so this sits just above what the format can
-/// actually produce.
-const DEFLATE_MAX_RATIO: u32 = 1_100;
+/// One configurable bound, in one of three states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Limit<T> {
+    /// The caller expressed no opinion, so the format's own default applies.
+    #[default]
+    Unset,
+    /// The caller explicitly removed the bound.
+    Unlimited,
+    /// The caller explicitly chose a bound.
+    Value(T),
+}
 
-/// The ratio limit that suits brotli.
-///
-/// Brotli has no comparable structural ceiling: measured on ordinary repetitive input it reaches
-/// 9 000x for a repeated short string, 10 900x for repetitive JSON, 21 000x for a repeated
-/// sentence, and 80 660x for 1 MiB of zeros — all legitimate data. A deflate-shaped limit rejects
-/// every one of them, so brotli needs its own, and even this one is a coarse backstop rather than
-/// real protection.
-const BROTLI_MAX_RATIO: u32 = 250_000;
+impl<T> Limit<T> {
+    #[cfg_attr(
+        all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+        expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+    )]
+    fn resolve(self, default: Option<T>) -> Option<T> {
+        match self {
+            Self::Unset => default,
+            Self::Unlimited => None,
+            Self::Value(value) => Some(value),
+        }
+    }
+}
 
 /// Bounds on how much data decompression may produce.
 ///
-/// Compressed formats can expand their input by many orders of magnitude, so a decoder pointed at
-/// untrusted data is a memory-exhaustion vector unless it is bounded. The default is a *ratio*
-/// limit rather than an absolute byte cap, because an absolute cap would reject exactly the large
-/// legitimate streams that streaming decompression exists to serve.
+/// Compressed data can expand by orders of magnitude, so a decoder pointed at untrusted input is a
+/// memory-exhaustion vector.
+///
+/// This type carries *overrides*, not values. Each bound starts unset, meaning the format applies
+/// its own default — there is no portable default, because the formats differ by orders of
+/// magnitude in what they can legitimately produce:
+///
+/// | Format | Default ratio bound | Why |
+/// |---|---|---|
+/// | [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] | 1100x | deflate cannot expand further than about 1032x; that is structural |
+/// | [`brotli`][crate::brotli] | 250 000x | brotli reaches 80 660x on a megabyte of zeros, and 21 028x on a repeated sentence — all legitimate |
+///
+/// Neither format caps total output size by default, so a multi-gigabyte stream decodes.
+///
+/// # Security
+///
+/// A ratio bound is a coarse backstop, not real protection: in a format with no structural
+/// expansion ceiling it cannot separate a bomb from legitimate highly-compressible data. For
+/// untrusted input set [`with_max_output_len`][Self::with_max_output_len] to whatever the caller
+/// can actually afford to buffer.
 ///
 /// ```
 /// use std::num::NonZeroU32;
 ///
 /// use compressed::DecompressionLimits;
 ///
-/// // Tighter than the default, for input from an untrusted peer.
-/// let limits = DecompressionLimits::DEFAULT
+/// // Leave the format's own ratio default alone, but cap what we will buffer.
+/// let untrusted = DecompressionLimits::new().with_max_output_len(16 * 1024 * 1024);
+///
+/// // Or override both.
+/// let strict = DecompressionLimits::new()
 ///     .with_max_ratio(NonZeroU32::new(50).unwrap())
-///     .with_max_output_len(16 * 1024 * 1024);
-/// # let _ = limits;
+///     .with_max_output_len(1024 * 1024);
+/// # let _ = (untrusted, strict);
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DecompressionLimits {
-    max_ratio: Option<u32>,
-    max_output_len: Option<u64>,
+    max_ratio: Limit<u32>,
+    max_output_len: Limit<u64>,
 }
 
 impl DecompressionLimits {
-    /// The limits for the deflate family: expansion capped at 1100x, no cap on total size.
+    /// Overrides nothing: every bound is left to the format's own default.
     ///
-    /// This is what [`Default`] returns and what the [`deflate`][crate::deflate],
-    /// [`zlib`][crate::zlib] and [`gzip`][crate::gzip] decoders use unless told otherwise. It sits
-    /// just above deflate's structural ceiling of roughly 1032x, so it never rejects data the
-    /// format could legitimately have produced.
-    pub const DEFAULT: Self = Self {
-        max_ratio: Some(DEFLATE_MAX_RATIO),
-        max_output_len: None,
-    };
+    /// This is what [`Default`] returns.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max_ratio: Limit::Unset,
+            max_output_len: Limit::Unset,
+        }
+    }
 
-    /// The limits for brotli: expansion capped at 250 000x, no cap on total size.
-    ///
-    /// Brotli legitimately reaches tens of thousands of times expansion on repetitive input, so it
-    /// needs a far looser ratio than the deflate family. That makes the ratio a coarse backstop
-    /// rather than real protection.
-    ///
-    /// # Security
-    ///
-    /// For untrusted brotli input, set [`with_max_output_len`][Self::with_max_output_len] to
-    /// whatever your caller can actually afford to buffer. A ratio limit cannot separate a bomb
-    /// from legitimate highly-compressible data in a format with no expansion ceiling.
-    pub const BROTLI: Self = Self {
-        max_ratio: Some(BROTLI_MAX_RATIO),
-        max_output_len: None,
-    };
-
-    /// Applies no limits at all.
+    /// Removes every bound, overriding whatever the format would have applied.
     ///
     /// # Security
     ///
@@ -93,32 +105,80 @@ impl DecompressionLimits {
     /// trust your own process. An unbounded decoder fed a decompression bomb will consume memory
     /// until the allocator gives up.
     pub const UNLIMITED: Self = Self {
-        max_ratio: None,
-        max_output_len: None,
+        max_ratio: Limit::Unlimited,
+        max_output_len: Limit::Unlimited,
     };
 
-    /// Sets the largest permitted ratio of decompressed to compressed bytes.
+    /// Bounds the ratio of decompressed to compressed bytes.
     ///
     /// The ratio is only enforced once cumulative output exceeds 32 KiB, so small streams are never
-    /// rejected for the fixed overhead of their container format.
+    /// rejected for the fixed overhead of their container.
     #[must_use]
     pub const fn with_max_ratio(mut self, ratio: NonZeroU32) -> Self {
-        self.max_ratio = Some(ratio.get());
+        self.max_ratio = Limit::Value(ratio.get());
         self
     }
 
-    /// Sets the largest permitted total decompressed size, in bytes.
+    /// Removes the ratio bound, overriding the format's default.
+    #[must_use]
+    pub const fn without_max_ratio(mut self) -> Self {
+        self.max_ratio = Limit::Unlimited;
+        self
+    }
+
+    /// Bounds the total decompressed size, in bytes.
+    ///
+    /// This is the bound that actually protects a caller which buffers the output.
     #[must_use]
     pub const fn with_max_output_len(mut self, bytes: u64) -> Self {
-        self.max_output_len = Some(bytes);
+        self.max_output_len = Limit::Value(bytes);
         self
     }
 
-    /// Fails if the totals so far violate either limit.
+    /// Removes the total size bound, overriding the format's default.
+    #[must_use]
+    pub const fn without_max_output_len(mut self) -> Self {
+        self.max_output_len = Limit::Unlimited;
+        self
+    }
+
+    /// Applies these overrides on top of a format's defaults.
     #[cfg_attr(
         all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
-        expect(dead_code, reason = "only the decoders enforce limits, and no format is enabled")
+        expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
     )]
+    pub(crate) fn resolve(self, defaults: FormatLimits) -> FormatLimits {
+        FormatLimits {
+            max_ratio: self.max_ratio.resolve(defaults.max_ratio),
+            max_output_len: self.max_output_len.resolve(defaults.max_output_len),
+        }
+    }
+}
+
+/// A format's bounds after the caller's overrides have been applied.
+///
+/// Private: formats declare their defaults as constants of this type, and the decoders enforce it.
+#[cfg_attr(
+    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatLimits {
+    max_ratio: Option<u32>,
+    max_output_len: Option<u64>,
+}
+
+#[cfg_attr(
+    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+)]
+impl FormatLimits {
+    /// Declares a format's default bounds.
+    pub(crate) const fn new(max_ratio: Option<u32>, max_output_len: Option<u64>) -> Self {
+        Self { max_ratio, max_output_len }
+    }
+
+    /// Fails if the totals so far violate either bound.
     pub(crate) fn check(self, input_len: u64, output_len: u64) -> Result<()> {
         if let Some(max) = self.max_output_len
             && output_len > max
@@ -142,66 +202,90 @@ impl DecompressionLimits {
     }
 }
 
-impl Default for DecompressionLimits {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for a format's declared defaults.
+    const DEFAULTS: FormatLimits = FormatLimits::new(Some(1_000), None);
 
     fn ratio(value: u32) -> NonZeroU32 {
         NonZeroU32::new(value).expect("test ratios are never zero")
     }
 
-    #[test]
-    fn default_matches_the_default_constant() {
-        assert_eq!(DecompressionLimits::default(), DecompressionLimits::DEFAULT);
+    fn resolved(limits: DecompressionLimits) -> FormatLimits {
+        limits.resolve(DEFAULTS)
     }
 
     #[test]
-    fn unlimited_accepts_an_absurd_expansion() {
-        DecompressionLimits::UNLIMITED.check(1, u64::MAX).expect("unlimited never rejects");
+    fn default_overrides_nothing() {
+        assert_eq!(DecompressionLimits::default(), DecompressionLimits::new());
+        assert_eq!(resolved(DecompressionLimits::default()), DEFAULTS);
+    }
+
+    #[test]
+    fn an_unset_bound_defers_to_the_format() {
+        // The whole point of the override model: a caller who cares about one bound must not
+        // silently clobber the other with a value calibrated for a different format.
+        let limits = DecompressionLimits::new().with_max_output_len(4096);
+        let resolved = resolved(limits);
+
+        assert_eq!(resolved.max_ratio, DEFAULTS.max_ratio, "the format's ratio must survive");
+        assert_eq!(resolved.max_output_len, Some(4096));
+    }
+
+    #[test]
+    fn unlimited_removes_the_formats_defaults() {
+        let resolved = resolved(DecompressionLimits::UNLIMITED);
+
+        assert_eq!(resolved.max_ratio, None);
+        assert_eq!(resolved.max_output_len, None);
+        resolved.check(1, u64::MAX).expect("unlimited never rejects");
+    }
+
+    #[test]
+    fn each_bound_can_be_removed_independently() {
+        let no_ratio = resolved(DecompressionLimits::new().without_max_ratio());
+        assert_eq!(no_ratio.max_ratio, None);
+        assert_eq!(no_ratio.max_output_len, DEFAULTS.max_output_len);
+
+        let no_len = resolved(DecompressionLimits::new().without_max_output_len());
+        assert_eq!(no_len.max_ratio, DEFAULTS.max_ratio);
+        assert_eq!(no_len.max_output_len, None);
+    }
+
+    #[test]
+    fn an_explicit_bound_overrides_the_format() {
+        let resolved = resolved(DecompressionLimits::new().with_max_ratio(ratio(7)));
+
+        assert_eq!(resolved.max_ratio, Some(7));
     }
 
     #[test]
     fn ratio_guard_rejects_a_bomb() {
-        let error = DecompressionLimits::DEFAULT
-            .check(1_000, 100 * 1024 * 1024)
-            .expect_err("100 MB from 1 KB is a bomb");
+        let error = DEFAULTS.check(1_000, 100 * 1024 * 1024).expect_err("100 MB from 1 KB is a bomb");
 
         assert!(error.is_limit_exceeded());
     }
 
     #[test]
-    fn ratio_guard_allows_ordinary_data() {
-        // Measured ratio for ordinary text is roughly 20x, well inside the 1000x default.
-        DecompressionLimits::DEFAULT
-            .check(512 * 1024, 10 * 1024 * 1024)
-            .expect("20x expansion is ordinary");
-    }
-
-    #[test]
     fn ratio_guard_allows_multi_gigabyte_streams() {
         // An absolute cap would reject this; a ratio guard must not.
-        DecompressionLimits::DEFAULT
+        DEFAULTS
             .check(64 * 1024 * 1024 * 1024, 640 * 1024 * 1024 * 1024)
             .expect("a 640 GB stream at 10x expansion is legitimate");
     }
 
     #[test]
     fn ratio_guard_ignores_output_below_the_floor() {
-        // Worst case: more output than the floor allows in ratio terms, but under the floor.
-        DecompressionLimits::DEFAULT
+        DEFAULTS
             .check(0, RATIO_FLOOR_BYTES)
             .expect("small outputs are never rejected on ratio");
     }
 
     #[test]
     fn ratio_guard_engages_immediately_above_the_floor() {
-        let error = DecompressionLimits::DEFAULT
+        let error = DEFAULTS
             .check(0, RATIO_FLOOR_BYTES + 1)
             .expect_err("zero input can never justify output above the floor");
 
@@ -209,40 +293,23 @@ mod tests {
     }
 
     #[test]
-    fn absolute_limit_rejects_beyond_the_cap() {
-        let error = DecompressionLimits::UNLIMITED
-            .with_max_output_len(100)
-            .check(1_000_000, 101)
-            .expect_err("101 bytes exceeds a 100 byte cap");
+    fn absolute_bound_rejects_beyond_the_cap() {
+        let limits = resolved(DecompressionLimits::new().with_max_output_len(100));
+        let error = limits.check(1_000_000, 101).expect_err("101 bytes exceeds a 100 byte cap");
 
         assert!(error.is_limit_exceeded());
     }
 
     #[test]
-    fn absolute_limit_allows_exactly_the_cap() {
-        DecompressionLimits::UNLIMITED
-            .with_max_output_len(100)
-            .check(1_000_000, 100)
-            .expect("the cap itself is allowed");
-    }
+    fn absolute_bound_allows_exactly_the_cap() {
+        let limits = resolved(DecompressionLimits::new().with_max_output_len(100));
 
-    #[test]
-    fn custom_ratio_is_applied() {
-        let limits = DecompressionLimits::UNLIMITED.with_max_ratio(ratio(2));
-
-        limits
-            .check(RATIO_FLOOR_BYTES, RATIO_FLOOR_BYTES * 2)
-            .expect("exactly 2x is allowed");
-
-        let error = limits
-            .check(RATIO_FLOOR_BYTES, RATIO_FLOOR_BYTES * 2 + 1)
-            .expect_err("just past 2x is rejected");
-        assert!(error.is_limit_exceeded());
+        limits.check(1_000_000, 100).expect("the cap itself is allowed");
     }
 
     #[test]
     fn ratio_multiplication_saturates_instead_of_overflowing() {
-        let limits = DecompressionLimits::UNLIMITED.with_max_ratio(ratio(u32::MAX));
+        let limits = resolved(DecompressionLimits::new().with_max_ratio(ratio(u32::MAX)));
 
         limits
             .check(u64::MAX, u64::MAX)

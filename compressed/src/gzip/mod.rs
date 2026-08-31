@@ -35,7 +35,7 @@ define_format! {
     new_encoder = |level, ()| FlateCompress::new(Wrapper::Gzip, level),
     decoder_codec = FlateDecompress,
     decoder_options = (),
-    default_limits = DecompressionLimits::DEFAULT,
+    default_limits = crate::flate::DEFAULT_LIMITS,
     new_decoder = |limits, concatenated, ()| FlateDecompress::new(Wrapper::Gzip, limits, concatenated),
     concatenated_default = true,
     concatenated_doc = "Sets whether concatenated gzip members decode as one logical stream.\n\nEnabled by default, matching `gzip(1)`.",

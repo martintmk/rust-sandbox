@@ -29,6 +29,16 @@
 mod codec;
 
 use crate::brotli::codec::{BrotliCompress, BrotliDecompress};
+use crate::limits::FormatLimits;
+
+/// Brotli's default bounds.
+///
+/// Brotli has no structural expansion ceiling: measured on ordinary repetitive input it reaches
+/// 9 000x for a repeated short string, 10 900x for repetitive JSON, 21 000x for a repeated sentence
+/// and 80 660x for 1 MiB of zeros — all legitimate data. A deflate-shaped bound rejects every one of
+/// them, so brotli needs its own, and even this one is a coarse backstop rather than real
+/// protection.
+const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(250_000), None);
 use crate::format::macros::define_format;
 
 define_format! {
@@ -38,7 +48,7 @@ define_format! {
     new_encoder = BrotliCompress::new,
     decoder_codec = BrotliDecompress,
     decoder_options = (),
-    default_limits = DecompressionLimits::BROTLI,
+    default_limits = DEFAULT_LIMITS,
     new_decoder = |limits, concatenated, ()| BrotliDecompress::new(limits, concatenated),
     concatenated_default = false,
     concatenated_doc = "Sets whether consecutive brotli streams decode as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",

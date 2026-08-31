@@ -161,7 +161,7 @@ fn rejects_a_bomb_before_materialising_it() {
     assert!(bomb.len() < 100 * 1024, "the bomb should be tiny: {} bytes", bomb.len());
 
     let mut decoder = gzip::Decoder::builder()
-        .limits(DecompressionLimits::DEFAULT.with_max_output_len(1024 * 1024))
+        .limits(DecompressionLimits::new().with_max_output_len(1024 * 1024))
         .build(GlobalPool::new());
     decoder.push(bomb).expect("push succeeds");
     decoder.finish();

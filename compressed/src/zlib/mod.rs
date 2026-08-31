@@ -34,7 +34,7 @@ define_format! {
     new_encoder = |level, ()| FlateCompress::new(Wrapper::Zlib, level),
     decoder_codec = FlateDecompress,
     decoder_options = (),
-    default_limits = DecompressionLimits::DEFAULT,
+    default_limits = crate::flate::DEFAULT_LIMITS,
     new_decoder = |limits, concatenated, ()| FlateDecompress::new(Wrapper::Zlib, limits, concatenated),
     concatenated_default = false,
     concatenated_doc = "Sets whether concatenated zlib streams decode as one logical stream.\n\nDisabled by default: unlike gzip, concatenating zlib streams is not an established convention.",

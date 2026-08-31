@@ -109,12 +109,16 @@
 //! with those chunks, which is why the limits matter most for the accumulating conveniences —
 //! `compress`, `decompress`, and [`Format::compress`] / [`Format::decompress`].
 //!
-//! Each decoder applies its format's own [`DecompressionLimits`], because a single ratio cannot
-//! serve both families. Deflate cannot expand by more than about 1032x — a structural property of
-//! the format — so [`DecompressionLimits::DEFAULT`] sits just above that at 1100x and never
-//! rejects data deflate could legitimately have produced. Brotli has no such ceiling: measured on
-//! ordinary repetitive input it reaches 9 000x for a repeated short string, 21 000x for a repeated
-//! sentence and 80 660x for a megabyte of zeros, so it uses [`DecompressionLimits::BROTLI`].
+//! Each format declares its own default bounds, because a single portable ratio cannot serve both
+//! families. Deflate cannot expand by more than about 1032x — a structural property of the format —
+//! so the deflate family defaults to 1100x and never rejects data it could legitimately have
+//! produced. Brotli has no such ceiling: measured on ordinary repetitive input it reaches 9 000x
+//! for a repeated short string, 21 000x for a repeated sentence and 80 660x for a megabyte of
+//! zeros, so it defaults to 250 000x.
+//!
+//! [`DecompressionLimits`] carries *overrides*, not values: bounds you leave unset keep the
+//! format's default, so [`DecompressionLimits::default()`] never silently imposes one format's
+//! calibration on another.
 //!
 //! **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
 //! [`DecompressionLimits::with_max_output_len`] to whatever the caller can actually afford to

@@ -10,6 +10,15 @@ pub(crate) mod codec;
 use flate2::{Compress, Compression, Decompress};
 
 use crate::level::Level;
+use crate::limits::FormatLimits;
+
+/// The deflate family's default bounds.
+///
+/// Deflate cannot expand its input by more than about 1032x — a structural property of the format,
+/// not a tuning choice — so a single stream is inherently bounded. Measured worst case for 1 MiB of
+/// zeros is 1015x, so this sits just above what the format can actually produce and never rejects
+/// data deflate could legitimately have generated. No cap on total size, so large streams decode.
+pub(crate) const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(1_100), None);
 
 /// The deflate window size exponent. 15 is the maximum, giving the best compression ratio.
 ///

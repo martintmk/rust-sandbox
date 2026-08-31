@@ -103,28 +103,32 @@ this crate grows with the length of the stream. The exposure belongs to whatever
 with those chunks, which is why the limits matter most for the accumulating conveniences —
 `compress`, `decompress`, and [`Format::compress`][__link12] / [`Format::decompress`][__link13].
 
-Each decoder applies its format’s own [`DecompressionLimits`][__link14], because a single ratio cannot
-serve both families. Deflate cannot expand by more than about 1032x — a structural property of
-the format — so [`DecompressionLimits::DEFAULT`][__link15] sits just above that at 1100x and never
-rejects data deflate could legitimately have produced. Brotli has no such ceiling: measured on
-ordinary repetitive input it reaches 9 000x for a repeated short string, 21 000x for a repeated
-sentence and 80 660x for a megabyte of zeros, so it uses [`DecompressionLimits::BROTLI`][__link16].
+Each format declares its own default bounds, because a single portable ratio cannot serve both
+families. Deflate cannot expand by more than about 1032x — a structural property of the format —
+so the deflate family defaults to 1100x and never rejects data it could legitimately have
+produced. Brotli has no such ceiling: measured on ordinary repetitive input it reaches 9 000x
+for a repeated short string, 21 000x for a repeated sentence and 80 660x for a megabyte of
+zeros, so it defaults to 250 000x.
+
+[`DecompressionLimits`][__link14] carries *overrides*, not values: bounds you leave unset keep the
+format’s default, so [`DecompressionLimits::default()`][__link15] never silently imposes one format’s
+calibration on another.
 
 **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
-[`DecompressionLimits::with_max_output_len`][__link17] to whatever the caller can actually afford to
-buffer. Use [`DecompressionLimits::UNLIMITED`][__link18] only for sources you trust as much as your own
+[`DecompressionLimits::with_max_output_len`][__link16] to whatever the caller can actually afford to
+buffer. Use [`DecompressionLimits::UNLIMITED`][__link17] only for sources you trust as much as your own
 process.
 
 ### Features
 
-* `brotli` — the [`brotli`][__link19] module and [`Format::Brotli`][__link20], via the pure-Rust `brotli` crate.
+* `brotli` — the [`brotli`][__link18] module and [`Format::Brotli`][__link19], via the pure-Rust `brotli` crate.
 * `futures-stream` — `CompressStream` and `DecompressStream`, which present compression and
-  decompression as a [`futures_core::Stream`][__link21] over any stream of byte sequences.
+  decompression as a [`futures_core::Stream`][__link20] over any stream of byte sequences.
 
 Both are off by default, so the base build pulls in nothing beyond `bytesbuf` and `flate2`.
 
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbLVS5ueH6t24bXiwxDxeYge4bj9N36vbS_jMbUaoYsWFo8r1hZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbMgXegrl4GqAbqFhhA8Sm0msbh8oWv6dO2bYbrROhkQmouzBhZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/compressed/0.1.0/compressed/deflate/index.html
  [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=Decoder
@@ -132,14 +136,13 @@ Both are off by default, so the base build pulls in nothing beyond `bytesbuf` an
  [__link12]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::compress
  [__link13]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::decompress
  [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits
- [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::DEFAULT
- [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::BROTLI
- [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
- [__link18]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
- [__link19]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
+ [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::default
+ [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
+ [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
+ [__link18]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
+ [__link19]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::Brotli
  [__link2]: https://docs.rs/compressed/0.1.0/compressed/zlib/index.html
- [__link20]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::Brotli
- [__link21]: https://docs.rs/futures_core/0.3.34/futures_core/?search=Stream
+ [__link20]: https://docs.rs/futures_core/0.3.34/futures_core/?search=Stream
  [__link3]: https://docs.rs/compressed/0.1.0/compressed/gzip/index.html
  [__link4]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
  [__link5]: https://docs.rs/bytesbuf/0.9.0/bytesbuf/?search=BytesView

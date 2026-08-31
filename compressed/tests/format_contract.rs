@@ -263,7 +263,7 @@ macro_rules! format_contract {
                 let bomb = $module::compress(view(&vec![0_u8; 16 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
 
                 let mut decoder = $module::Decoder::builder()
-                    .limits(DecompressionLimits::UNLIMITED.with_max_ratio(NonZeroU32::new(4).expect("4 is not zero")))
+                    .limits(DecompressionLimits::new().with_max_ratio(NonZeroU32::new(4).expect("4 is not zero")))
                     .build(memory);
                 decoder.push(bomb).expect("push succeeds");
                 Decoder::finish(&mut decoder);
@@ -320,7 +320,7 @@ macro_rules! format_contract {
                 let encoded = $module::compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
 
                 let mut decoder = $module::Decoder::builder()
-                    .limits(DecompressionLimits::UNLIMITED.with_max_output_len(1024))
+                    .limits(DecompressionLimits::new().without_max_ratio().with_max_output_len(1024))
                     .build(memory);
                 decoder.push(encoded).expect("push succeeds");
                 Decoder::finish(&mut decoder);

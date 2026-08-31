@@ -10,7 +10,7 @@ use crate::engine::{Codec, Step};
 use crate::error::{Error, Result};
 use crate::flate::Wrapper;
 use crate::level::Level;
-use crate::limits::DecompressionLimits;
+use crate::limits::FormatLimits;
 
 #[derive(Debug)]
 pub(crate) struct FlateCompress {
@@ -58,12 +58,12 @@ impl Codec for FlateCompress {
 pub(crate) struct FlateDecompress {
     decompress: Decompress,
     wrapper: Wrapper,
-    limits: DecompressionLimits,
+    limits: FormatLimits,
     concatenated: bool,
 }
 
 impl FlateDecompress {
-    pub(crate) fn new(wrapper: Wrapper, limits: DecompressionLimits, concatenated: bool) -> Self {
+    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, concatenated: bool) -> Self {
         Self {
             decompress: wrapper.decompressor(),
             wrapper,

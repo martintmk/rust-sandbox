@@ -137,7 +137,7 @@ impl Format {
     pub const fn decoder(self) -> DecoderBuilder {
         DecoderBuilder {
             format: self,
-            limits: None,
+            limits: DecompressionLimits::new(),
             chunk_size: default_chunk_size(),
             concatenated: None,
         }
@@ -160,7 +160,7 @@ impl Format {
 
     /// Decompresses a complete stream that is already in memory.
     ///
-    /// Applies [`DecompressionLimits::DEFAULT`]; for anything else, configure a decoder with
+    /// Applies [`DecompressionLimits::new()`]; for anything else, configure a decoder with
     /// [`Format::decoder`].
     ///
     /// # Errors
@@ -254,17 +254,16 @@ impl EncoderBuilder {
 #[derive(Debug, Clone, Copy)]
 pub struct DecoderBuilder {
     format: Format,
-    limits: Option<DecompressionLimits>,
+    limits: DecompressionLimits,
     chunk_size: NonZeroUsize,
     concatenated: Option<bool>,
 }
 
 impl DecoderBuilder {
-    /// Sets the bounds on how much data decompression may produce.
+    /// Overrides the bounds on how much data decompression may produce.
     ///
-    /// Left unset, each format keeps its own default: [`DecompressionLimits::DEFAULT`] for the
-    /// deflate family and [`DecompressionLimits::BROTLI`] for brotli, which legitimately expands
-    /// far further.
+    /// Bounds left unset on the passed value keep the chosen format's own defaults, which differ by
+    /// orders of magnitude between the deflate family and brotli.
     ///
     /// # Security
     ///
@@ -272,7 +271,7 @@ impl DecoderBuilder {
     /// from an untrusted peer.
     #[must_use]
     pub const fn limits(mut self, limits: DecompressionLimits) -> Self {
-        self.limits = Some(limits);
+        self.limits = limits;
         self
     }
 
@@ -299,12 +298,9 @@ impl DecoderBuilder {
     pub fn build(self, memory: impl MemoryShared) -> Box<dyn Decoder> {
         macro_rules! build {
             ($module:ident) => {{
-                let builder = crate::$module::Decoder::builder().output_chunk_size(self.chunk_size);
-
-                let builder = match self.limits {
-                    Some(limits) => builder.limits(limits),
-                    None => builder,
-                };
+                let builder = crate::$module::Decoder::builder()
+                    .limits(self.limits)
+                    .output_chunk_size(self.chunk_size);
 
                 let builder = match self.concatenated {
                     Some(enabled) => builder.concatenated(enabled),
@@ -455,7 +451,7 @@ mod tests {
 
             let mut decoder = format
                 .decoder()
-                .limits(DecompressionLimits::UNLIMITED.with_max_output_len(1024))
+                .limits(DecompressionLimits::new().without_max_ratio().with_max_output_len(1024))
                 .build(memory);
             decoder.push(encoded).expect("push succeeds");
             decoder.finish();

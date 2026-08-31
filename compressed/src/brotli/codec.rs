@@ -16,7 +16,7 @@ use crate::brotli::{EncoderOptions, Mode};
 use crate::engine::{Codec, Step};
 use crate::error::{Error, Result};
 use crate::level::Level;
-use crate::limits::DecompressionLimits;
+use crate::limits::FormatLimits;
 
 /// Brotli's native quality range is `0..=11`, wider than the portable [`Level`] scale of `0..=9`.
 ///
@@ -120,13 +120,13 @@ impl Codec for BrotliCompress {
 
 pub(crate) struct BrotliDecompress {
     state: BrotliState<HeapAlloc<u8>, HeapAlloc<u32>, HeapAlloc<HuffmanCode>>,
-    limits: DecompressionLimits,
+    limits: FormatLimits,
     concatenated: bool,
     total_out: usize,
 }
 
 impl BrotliDecompress {
-    pub(crate) fn new(limits: DecompressionLimits, concatenated: bool) -> Self {
+    pub(crate) fn new(limits: FormatLimits, concatenated: bool) -> Self {
         Self {
             state: Self::state(),
             limits,

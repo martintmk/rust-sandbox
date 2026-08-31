@@ -217,7 +217,7 @@ pin_project! {
     /// # Security
     ///
     /// [`DecompressStream::gzip`] applies
-    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT]. Build a decoder with
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()]. Build a decoder with
     /// [`gzip::Decoder::builder`][crate::gzip::Decoder::builder] and pass it to [`DecompressStream::new`] to tighten the limits for
     /// untrusted sources.
     ///
@@ -259,7 +259,7 @@ pin_project! {
 
 impl<S> DecompressStream<S> {
     /// Decompresses a gzip `source` with
-    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
     ///
     /// For a format chosen at runtime, pass [`Format::decoder`][crate::Format::decoder] to
     /// [`DecompressStream::new`].
@@ -270,7 +270,7 @@ impl<S> DecompressStream<S> {
     }
 
     /// Decompresses a zlib `source` with
-    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
     #[cfg(feature = "zlib")]
     #[must_use]
     pub fn zlib(source: S, memory: impl MemoryShared) -> Self {
@@ -278,7 +278,7 @@ impl<S> DecompressStream<S> {
     }
 
     /// Decompresses a raw deflate `source` with
-    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
     #[cfg(feature = "deflate")]
     #[must_use]
     pub fn deflate(source: S, memory: impl MemoryShared) -> Self {
@@ -286,7 +286,7 @@ impl<S> DecompressStream<S> {
     }
 
     /// Decompresses a brotli `source` with
-    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
     #[cfg(feature = "brotli")]
     #[must_use]
     pub fn brotli(source: S, memory: impl MemoryShared) -> Self {
@@ -434,7 +434,7 @@ mod tests {
         let gzip = crate::gzip::compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
 
         let decoder = gzip::Decoder::builder()
-            .limits(DecompressionLimits::DEFAULT.with_max_output_len(1024))
+            .limits(DecompressionLimits::new().with_max_output_len(1024))
             .build(memory);
 
         let error = collect(DecompressStream::new(ok_stream(vec![gzip]), decoder)).expect_err("the cap fires");

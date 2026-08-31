@@ -168,8 +168,8 @@ macro_rules! define_format {
         /// # Security
         ///
         /// Compressed data can expand by orders of magnitude, so a decoder pointed at untrusted
-        /// input is a memory-exhaustion vector. [`DecompressionLimits::DEFAULT`] applies unless
-        /// [`DecoderBuilder::limits`] says otherwise.
+        /// input is a memory-exhaustion vector. This format's own default bounds apply unless
+        /// [`DecoderBuilder::limits`] overrides them.
         #[derive(Debug)]
         pub struct Decoder {
             pump: Pump,
@@ -177,7 +177,6 @@ macro_rules! define_format {
         }
 
         impl Decoder {
-            /// Creates a decoder with [`DecompressionLimits::DEFAULT`].
             #[must_use]
             pub fn new(memory: impl MemoryShared) -> Self {
                 Self::builder().build(memory)
@@ -245,7 +244,9 @@ macro_rules! define_format {
         }
 
         impl DecoderBuilder {
-            /// Sets the bounds on how much data decompression may produce.
+            #[doc = concat!("Overrides the bounds on how much data decompression may produce.")]
+            ///
+            /// Bounds left unset on the passed value keep this format's own defaults.
             #[must_use]
             pub const fn limits(mut self, limits: DecompressionLimits) -> Self {
                 self.limits = limits;
@@ -276,7 +277,7 @@ macro_rules! define_format {
             pub fn build(self, memory: impl MemoryShared) -> Decoder {
                 Decoder {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_decoder(self.limits, self.concatenated, self.options),
+                    codec: $new_decoder(self.limits.resolve($default_limits), self.concatenated, self.options),
                 }
             }
         }
@@ -284,7 +285,7 @@ macro_rules! define_format {
         impl Default for DecoderBuilder {
             fn default() -> Self {
                 Self {
-                    limits: $default_limits,
+                    limits: DecompressionLimits::new(),
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     concatenated: $concatenated_default,
                     options: <$dec_options>::default(),
@@ -317,7 +318,7 @@ macro_rules! define_format {
 
         #[doc = concat!("Decompresses a complete ", $name, " stream that is already in memory.")]
         ///
-        /// Applies [`DecompressionLimits::DEFAULT`]. Prefer [`Decoder`] for data that arrives
+        /// Applies this format's default bounds. Prefer [`Decoder`] for data that arrives
         /// incrementally; this convenience buffers the entire result before returning.
         ///
         /// # Errors
