@@ -5,20 +5,35 @@ use std::fmt;
 use bytesbuf::BytesView;
 
 use crate::error::Result;
-use crate::gzip;
 use crate::output::Output;
 
 mod sealed {
+    extern crate alloc;
+
     pub trait Sealed {}
 
+    #[cfg(feature = "brotli")]
+    impl Sealed for crate::brotli::Encoder {}
+    #[cfg(feature = "brotli")]
+    impl Sealed for crate::brotli::Decoder {}
+    impl Sealed for crate::deflate::Encoder {}
+    impl Sealed for crate::deflate::Decoder {}
     impl Sealed for crate::gzip::Encoder {}
     impl Sealed for crate::gzip::Decoder {}
+    impl Sealed for crate::zlib::Encoder {}
+    impl Sealed for crate::zlib::Decoder {}
+
+    impl Sealed for alloc::boxed::Box<dyn super::Encoder> {}
+    impl Sealed for alloc::boxed::Box<dyn super::Decoder> {}
 }
 
 /// A streaming compressor.
 ///
 /// This is the contract every format's encoder satisfies, so callers can be generic over the
-/// format. [`gzip::Encoder`] is the only implementation today.
+/// format: [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] and, with the
+/// `brotli` feature, [`brotli`][crate::brotli]. A `Box<dyn Encoder>` is itself an `Encoder`, so a
+/// format chosen at runtime with [`Format::encoder`][crate::Format::encoder] fits anywhere a
+/// concrete encoder does.
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they
 /// need, without breaking downstream code.
@@ -72,7 +87,10 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send {
 /// A streaming decompressor.
 ///
 /// This is the contract every format's decoder satisfies, so callers can be generic over the
-/// format. [`gzip::Decoder`] is the only implementation today.
+/// format: [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] and, with the
+/// `brotli` feature, [`brotli`][crate::brotli]. A `Box<dyn Decoder>` is itself a `Decoder`, so a
+/// format chosen at runtime with [`Format::decoder`][crate::Format::decoder] fits anywhere a
+/// concrete decoder does.
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they
 /// need, without breaking downstream code.
@@ -95,39 +113,81 @@ pub trait Decoder: sealed::Sealed + fmt::Debug + Send {
     fn pull(&mut self) -> Result<Output>;
 }
 
-impl Encoder for gzip::Encoder {
+/// Forwards the trait methods to a format module's inherent methods.
+macro_rules! impl_codec_traits {
+    ($($module:ident),+ $(,)?) => {
+        $(
+            impl Encoder for crate::$module::Encoder {
+                fn push(&mut self, input: BytesView) -> Result<()> {
+                    Self::push(self, input)
+                }
+
+                fn finish(&mut self) {
+                    Self::finish(self);
+                }
+
+                fn pull(&mut self) -> Result<Output> {
+                    Self::pull(self)
+                }
+            }
+
+            impl Decoder for crate::$module::Decoder {
+                fn push(&mut self, input: BytesView) -> Result<()> {
+                    Self::push(self, input)
+                }
+
+                fn finish(&mut self) {
+                    Self::finish(self);
+                }
+
+                fn pull(&mut self) -> Result<Output> {
+                    Self::pull(self)
+                }
+            }
+        )+
+    };
+}
+
+impl_codec_traits!(deflate, gzip, zlib);
+
+// A boxed codec is itself a codec, so anything that accepts `impl Encoder` also accepts the
+// runtime-selected `Box<dyn Encoder>` that `Format::encoder` returns.
+impl Encoder for Box<dyn Encoder> {
     fn push(&mut self, input: BytesView) -> Result<()> {
-        Self::push(self, input)
+        (**self).push(input)
     }
 
     fn finish(&mut self) {
-        Self::finish(self);
+        (**self).finish();
     }
 
     fn pull(&mut self) -> Result<Output> {
-        Self::pull(self)
+        (**self).pull()
     }
 }
 
-impl Decoder for gzip::Decoder {
+impl Decoder for Box<dyn Decoder> {
     fn push(&mut self, input: BytesView) -> Result<()> {
-        Self::push(self, input)
+        (**self).push(input)
     }
 
     fn finish(&mut self) {
-        Self::finish(self);
+        (**self).finish();
     }
 
     fn pull(&mut self) -> Result<Output> {
-        Self::pull(self)
+        (**self).pull()
     }
 }
+#[cfg(feature = "brotli")]
+impl_codec_traits!(brotli);
 
 #[cfg(test)]
 mod tests {
     use bytesbuf::mem::GlobalPool;
 
     use super::*;
+    use crate::gzip;
 
     fn view(bytes: &[u8]) -> BytesView {
         BytesView::copied_from_slice(bytes, &GlobalPool::new())

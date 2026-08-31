@@ -11,7 +11,6 @@ use pin_project_lite::pin_project;
 
 use crate::codec::{Decoder, Encoder};
 use crate::error::{Error, Result};
-use crate::gzip;
 use crate::output::Output;
 
 /// The push/pull surface both directions share, so the adapters need only one driver.
@@ -151,11 +150,31 @@ pin_project! {
 impl<S> CompressStream<S> {
     /// Compresses `source` as gzip at [`Level::DEFAULT`][crate::Level::DEFAULT].
     ///
-    /// To choose a compression level or output chunk size, build a [`gzip::Encoder`] with
-    /// [`gzip::Encoder::builder`] and pass it to [`CompressStream::new`].
+    /// To choose a compression level or output chunk size, build an encoder with its `builder` and
+    /// pass it to [`CompressStream::new`]. For a format chosen at runtime, pass
+    /// [`Format::encoder`][crate::Format::encoder].
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
-        Self::new(source, gzip::Encoder::new(memory))
+        Self::new(source, crate::gzip::Encoder::new(memory))
+    }
+
+    /// Compresses `source` as zlib at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[must_use]
+    pub fn zlib(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::zlib::Encoder::new(memory))
+    }
+
+    /// Compresses `source` as raw deflate at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[must_use]
+    pub fn deflate(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::deflate::Encoder::new(memory))
+    }
+
+    /// Compresses `source` as brotli at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[cfg(feature = "brotli")]
+    #[must_use]
+    pub fn brotli(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::brotli::Encoder::new(memory))
     }
 
     /// Compresses `source` with a pre-configured encoder.
@@ -195,7 +214,7 @@ pin_project! {
     ///
     /// [`DecompressStream::gzip`] applies
     /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT]. Build a decoder with
-    /// [`gzip::Decoder::builder`] and pass it to [`DecompressStream::new`] to tighten the limits for
+    /// [`gzip::Decoder::builder`][crate::gzip::Decoder::builder] and pass it to [`DecompressStream::new`] to tighten the limits for
     /// untrusted sources.
     ///
     /// ```
@@ -237,9 +256,34 @@ pin_project! {
 impl<S> DecompressStream<S> {
     /// Decompresses a gzip `source` with
     /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    ///
+    /// For a format chosen at runtime, pass [`Format::decoder`][crate::Format::decoder] to
+    /// [`DecompressStream::new`].
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
-        Self::new(source, gzip::Decoder::new(memory))
+        Self::new(source, crate::gzip::Decoder::new(memory))
+    }
+
+    /// Decompresses a zlib `source` with
+    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    #[must_use]
+    pub fn zlib(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::zlib::Decoder::new(memory))
+    }
+
+    /// Decompresses a raw deflate `source` with
+    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    #[must_use]
+    pub fn deflate(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::deflate::Decoder::new(memory))
+    }
+
+    /// Decompresses a brotli `source` with
+    /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    #[cfg(feature = "brotli")]
+    #[must_use]
+    pub fn brotli(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::brotli::Decoder::new(memory))
     }
 
     /// Decompresses `source` with a pre-configured decoder.
@@ -273,7 +317,7 @@ mod tests {
     use futures::{StreamExt, stream};
 
     use super::*;
-    use crate::{DecompressionLimits, Level};
+    use crate::{DecompressionLimits, Level, gzip};
 
     fn view(bytes: &[u8]) -> BytesView {
         BytesView::copied_from_slice(bytes, &GlobalPool::new())
@@ -318,7 +362,7 @@ mod tests {
     #[test]
     fn decompresses_a_byte_at_a_time() {
         let memory = GlobalPool::new();
-        let encoded = gzip::compress(view(b"one byte at a time"), memory.clone()).expect("compression succeeds");
+        let encoded = crate::gzip::compress(view(b"one byte at a time"), memory.clone()).expect("compression succeeds");
         let single_bytes = (0..encoded.len()).map(|i| encoded.range(i..=i)).collect();
 
         let plain = collect(DecompressStream::gzip(ok_stream(single_bytes), memory)).expect("decompression succeeds");
@@ -359,7 +403,7 @@ mod tests {
     #[test]
     fn stays_ended_after_completion() {
         let memory = GlobalPool::new();
-        let gzip = gzip::compress(view(b"done"), memory.clone()).expect("compression succeeds");
+        let gzip = crate::gzip::compress(view(b"done"), memory.clone()).expect("compression succeeds");
         let mut stream = Box::pin(DecompressStream::gzip(ok_stream(vec![gzip]), memory));
 
         block_on(async {
@@ -380,7 +424,7 @@ mod tests {
     #[test]
     fn honours_a_pre_configured_decoder() {
         let memory = GlobalPool::new();
-        let gzip = gzip::compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
+        let gzip = crate::gzip::compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
 
         let decoder = gzip::Decoder::builder()
             .limits(DecompressionLimits::DEFAULT.with_max_output_len(1024))
