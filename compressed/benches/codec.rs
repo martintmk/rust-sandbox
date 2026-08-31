@@ -99,10 +99,7 @@ fn compress(
         None => builder,
     };
 
-    let mut encoder = builder.build(memory.clone());
-    encoder.push(input.clone()).expect("push succeeds");
-
-    encoder.finish_and_collect().expect("compression succeeds")
+    builder.build(memory.clone()).encode(input.clone()).expect("compression succeeds")
 }
 
 fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &GlobalPool) -> BytesView {
@@ -112,18 +109,16 @@ fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &G
         None => builder,
     };
 
-    let mut decoder = builder.build(memory.clone());
-    decoder.push(input.clone()).expect("push succeeds");
-
-    decoder.finish_and_collect().expect("decompression succeeds")
+    builder.build(memory.clone()).decode(input.clone()).expect("decompression succeeds")
 }
 
 /// Compresses with an explicit brotli window, which the runtime `Format` builder cannot express.
 fn encode_brotli(window: WindowSize, input: &BytesView, memory: &GlobalPool) -> BytesView {
-    let mut encoder = brotli::Encoder::builder().window_size(window).build(memory.clone());
-    encoder.push(input.clone()).expect("push succeeds");
-
-    encoder.finish_and_collect().expect("compression succeeds")
+    brotli::Encoder::builder()
+        .window_size(window)
+        .build(memory.clone())
+        .encode(input.clone())
+        .expect("compression succeeds")
 }
 
 /// Runs `body` under Criterion while attributing its allocations to `operation`.

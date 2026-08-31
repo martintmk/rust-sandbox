@@ -45,7 +45,7 @@ pub(crate) struct EngineKey {
 /// ```
 /// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;
-/// use compressed::{Level, Pool, gzip};
+/// use compressed::{Encoder, Level, Pool, gzip};
 ///
 /// #[derive(Clone)]
 /// struct HttpClient {
@@ -55,14 +55,12 @@ pub(crate) struct EngineKey {
 ///
 /// impl HttpClient {
 ///     fn compress_body(&self, body: BytesView) -> compressed::Result<BytesView> {
-///         let mut encoder = gzip::Encoder::builder()
+///         gzip::Encoder::builder()
 ///             .level(Level::DEFAULT)
 ///             .pool(self.codecs.clone())
-///             .build(self.memory.clone());
-///
-///         encoder.push(body)?;
-///         Ok(encoder.finish_and_collect()?)
-///         // Dropping `encoder` returns its engine to the pool for the next request.
+///             .build(self.memory.clone())
+///             .encode(body)
+///         // The encoder is dropped here, returning its engine to the pool for the next request.
 ///     }
 /// }
 ///

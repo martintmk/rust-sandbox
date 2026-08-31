@@ -336,9 +336,7 @@ macro_rules! define_format {
         ///
         /// Returns an error if the underlying compression engine fails.
         pub fn compress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-            let mut encoder = Encoder::new(memory);
-            encoder.push(input)?;
-            encoder.finish_and_collect()
+            Encoder::new(memory).encode(input)
         }
 
         #[doc = concat!("Decompresses a complete ", $name, " stream that is already in memory.")]
@@ -350,9 +348,7 @@ macro_rules! define_format {
         ///
         /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
         pub fn decompress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-            let mut decoder = Decoder::new(memory);
-            decoder.push(input)?;
-            decoder.finish_and_collect()
+            Decoder::new(memory).decode(input)
         }
     };
 }

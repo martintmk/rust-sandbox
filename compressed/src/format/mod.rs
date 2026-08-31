@@ -264,9 +264,7 @@ impl Format {
     ///
     /// Returns an error if the underlying compression engine fails.
     pub fn compress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        let mut encoder = self.encoder().build(memory);
-        encoder.push(input)?;
-        encoder.finish_and_collect()
+        self.encoder().build(memory).encode(input)
     }
 
     /// Decompresses a complete stream that is already in memory.
@@ -278,9 +276,7 @@ impl Format {
     ///
     /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
     pub fn decompress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        let mut decoder = self.decoder().build(memory);
-        decoder.push(input)?;
-        decoder.finish_and_collect()
+        self.decoder().build(memory).decode(input)
     }
 }
 

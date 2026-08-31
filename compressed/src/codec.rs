@@ -56,8 +56,7 @@ mod sealed {
 ///
 /// /// Compresses a payload with whichever encoder it is handed.
 /// fn encode(mut encoder: impl Encoder, input: BytesView) -> compressed::Result<BytesView> {
-///     encoder.push(input)?;
-///     encoder.finish_and_collect()
+///     encoder.encode(input)
 /// }
 ///
 /// let memory = GlobalPool::new();
@@ -87,21 +86,47 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// Returns an error if the underlying compression engine fails.
     fn pull(&mut self) -> Result<Output>;
 
-    /// Finishes the stream and collects everything still to be produced.
+    /// Compresses one complete input and returns the whole result.
     ///
-    /// This calls [`finish`][Encoder::finish] itself and then drains
-    /// [`pull`][Encoder::pull], so it cannot be misused into returning a partial result the way a
-    /// bare drain loop can: before finishing, `pull` reports that it needs more input, which is
-    /// indistinguishable from the end of the stream once the chunk has been unwrapped. Finishing
-    /// twice is harmless, so calling this after [`finish`][Encoder::finish] is fine.
+    /// The shorthand for [`push`][Encoder::push], [`finish`][Encoder::finish] and draining
+    /// [`pull`][Encoder::pull]. It ends the stream, so an encoder serves one call; build another
+    /// for the next payload, from a [`Pool`][crate::Pool] if the setup cost matters.
     ///
-    /// This buffers the whole remaining output, so peak memory follows the size of the result.
-    /// Drive [`pull`][Encoder::pull] directly to keep it bounded by the chunk size instead.
+    /// Prefer a free function such as [`gzip::compress`][crate::gzip::compress] when the default
+    /// configuration will do. Those build a fresh encoder per call and so can be called
+    /// repeatedly, which this deliberately cannot; this exists for an encoder configured with a
+    /// level, a pool or a chunk size.
+    ///
+    /// This buffers the whole result, so peak memory follows its size. Drive
+    /// [`pull`][Encoder::pull] directly to keep memory bounded by the chunk size instead.
+    ///
+    /// Taking `self` by value is what makes "one call per encoder" a compile error rather than a
+    /// runtime one. `Self: Sized` keeps the trait object safe, and a `Box<dyn Encoder>` is itself
+    /// sized, so a runtime-selected encoder can still be consumed this way.
+    ///
+    /// ```compile_fail
+    /// use bytesbuf::BytesView;
+    /// use bytesbuf::mem::GlobalPool;
+    /// use compressed::{Encoder, gzip};
+    ///
+    /// let memory = GlobalPool::new();
+    /// let input = BytesView::copied_from_slice(b"payload", &memory);
+    /// let encoder = gzip::Encoder::new(memory);
+    ///
+    /// encoder.encode(input.clone())?;
+    /// // The encoder was consumed by the call above, so this does not compile.
+    /// encoder.encode(input)?;
+    /// # Ok::<(), compressed::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying compression engine fails.
-    fn finish_and_collect(&mut self) -> Result<BytesView> {
+    fn encode(mut self, input: BytesView) -> Result<BytesView>
+    where
+        Self: Sized,
+    {
+        self.push(input)?;
         self.finish();
 
         // Appending a view to a `BytesBuf` is zero-copy, so the chunks are joined without an
@@ -143,23 +168,31 @@ pub trait Decoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// Returns an error if the data is invalid, truncated, or exceeds the configured limits.
     fn pull(&mut self) -> Result<Output>;
 
-    /// Finishes the stream and collects everything still to be produced.
+    /// Decompresses one complete stream and returns the whole result.
     ///
-    /// This calls [`finish`][Decoder::finish] itself and then drains [`pull`][Decoder::pull], so
-    /// it cannot be misused into returning a partial result the way a bare drain loop can: before
-    /// finishing, `pull` reports that it needs more input, which is indistinguishable from the end
-    /// of the stream once the chunk has been unwrapped. That distinction matters more here than
-    /// for an encoder, because a silently short decode looks like valid data. Finishing twice is
-    /// harmless, so calling this after [`finish`][Decoder::finish] is fine.
+    /// The shorthand for [`push`][Decoder::push], [`finish`][Decoder::finish] and draining
+    /// [`pull`][Decoder::pull]. It ends the stream, so a decoder serves one call.
     ///
-    /// This buffers the whole remaining output, so peak memory follows the size of the result.
-    /// Drive [`pull`][Decoder::pull] directly to keep it bounded by the chunk size instead, which
-    /// also keeps the configured limits meaningful against a hostile stream.
+    /// Prefer a free function such as [`gzip::decompress`][crate::gzip::decompress] when the
+    /// default limits will do; this exists for a decoder configured with its own limits, a pool or
+    /// a chunk size.
+    ///
+    /// This buffers the entire result, so it suits data whose size is already known and trusted.
+    /// Against a hostile stream, drive [`pull`][Decoder::pull] and stop early instead: the
+    /// configured limits still apply here, but only once the work has been done.
+    ///
+    /// Taking `self` by value is what makes "one call per decoder" a compile error rather than a
+    /// runtime one. `Self: Sized` keeps the trait object safe, and a `Box<dyn Decoder>` is itself
+    /// sized, so a runtime-selected decoder can still be consumed this way.
     ///
     /// # Errors
     ///
     /// Returns an error if the data is invalid, truncated, or exceeds the configured limits.
-    fn finish_and_collect(&mut self) -> Result<BytesView> {
+    fn decode(mut self, input: BytesView) -> Result<BytesView>
+    where
+        Self: Sized,
+    {
+        self.push(input)?;
         self.finish();
 
         // Appending a view to a `BytesBuf` is zero-copy, so the chunks are joined without an
