@@ -77,6 +77,7 @@ use compressed::{Format, Level};
 
 // Pick the encoding the client ranked highest among those this build supports.
 let format = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8, deflate;q=0.5")
+    .next()
     .expect("no mutually supported encoding");
 
 let memory = GlobalPool::new();
@@ -147,7 +148,7 @@ process.
 Both are off by default, so the base build pulls in nothing beyond `bytesbuf` and `flate2`.
 
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbyd3UvErodlQb6XapFv5zoa0bmq11nGLjNMYbjbKiPU4IaTthZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQb03c3x7RTKEwbrTsZ3Ui9RuUbEMtK_HypxTUbOC4REGiaAwhhZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/compressed/0.1.0/compressed/deflate/index.html
  [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=Decoder

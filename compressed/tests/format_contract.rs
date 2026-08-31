@@ -514,7 +514,9 @@ fn a_decoder_can_be_chosen_from_a_declared_encoding() {
 #[test]
 fn content_negotiation_selects_a_supported_format() {
     // The other end-to-end runtime scenario: pick an encoding from what a client says it accepts.
-    let negotiate = Format::from_accept_encoding;
+    fn negotiate(header: &str) -> Option<Format> {
+        Format::from_accept_encoding(header).next()
+    }
 
     assert_eq!(negotiate("identity"), None);
 

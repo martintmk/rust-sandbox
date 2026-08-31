@@ -13,6 +13,7 @@
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 pub(crate) mod macros;
 
+use std::cmp::Reverse;
 use std::num::NonZeroUsize;
 
 use bytesbuf::BytesView;
@@ -135,36 +136,46 @@ impl Format {
         None
     }
 
-    /// Chooses the most preferred supported encoding from an `Accept-Encoding` header.
+    /// Lists the encodings a client accepts, most preferred first.
     ///
-    /// Real headers are weighted lists such as `br;q=1.0, gzip;q=0.8, *;q=0.1`, so a bare token
-    /// match is not enough: this parses the quality values, discards encodings this build does not
-    /// support, and returns the acceptable one the client ranked highest. Ties keep the order the
-    /// client wrote.
+    /// Real `Accept-Encoding` headers are weighted lists such as `br;q=1.0, gzip;q=0.8, *;q=0.1`,
+    /// so a bare token match is not enough. This parses the quality values, discards encodings this
+    /// build does not support, and yields the rest in preference order, keeping the client's order
+    /// on a tie.
     ///
-    /// A quality of zero means the client explicitly refuses that encoding, so it is never
-    /// returned. `identity` and `*` are ignored — returning `None` simply means sending the body
+    /// It yields *every* acceptable encoding rather than picking one, because the choice is often
+    /// the caller's: a server may decline an encoding the client would accept, for its cost or for
+    /// compatibility. Filter the iterator and take the first survivor.
+    ///
+    /// A quality of zero means the client explicitly refuses that encoding, so it is never yielded.
+    /// `identity` and `*` are ignored — an empty iterator simply means sending the body
     /// uncompressed, which is always acceptable.
     ///
     /// ```
     /// use compressed::Format;
     ///
-    /// assert_eq!(
-    ///     Format::from_accept_encoding("gzip;q=0.8, deflate;q=0.5"),
-    ///     Some(Format::Gzip)
-    /// );
+    /// // Take the client's first choice.
+    /// let best = Format::from_accept_encoding("gzip;q=0.8, deflate;q=0.5").next();
+    /// assert_eq!(best, Some(Format::Gzip));
     ///
-    /// // A quality of zero is a refusal, not a preference.
+    /// // Or apply your own policy on top of the client's ranking.
+    /// let affordable = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8")
+    ///     .find(|format| *format != Format::Brotli);
+    /// assert_eq!(affordable, Some(Format::Gzip));
+    ///
+    /// // A quality of zero is a refusal, not a low ranking.
     /// assert_eq!(
-    ///     Format::from_accept_encoding("gzip;q=0, deflate"),
+    ///     Format::from_accept_encoding("gzip;q=0, deflate").next(),
     ///     Some(Format::Zlib)
     /// );
     ///
-    /// assert_eq!(Format::from_accept_encoding("identity"), None);
+    /// assert_eq!(Format::from_accept_encoding("identity").count(), 0);
     /// ```
-    #[must_use]
-    pub fn from_accept_encoding(header: &str) -> Option<Self> {
-        let mut best: Option<(Self, u16)> = None;
+    pub fn from_accept_encoding(header: &str) -> impl Iterator<Item = Self> + use<> {
+        // At most one entry per supported format, so the ranking never allocates however long or
+        // repetitive the header is.
+        let mut ranked: [Option<Ranked>; MAX_ACCEPTED] = [None; MAX_ACCEPTED];
+        let mut len = 0;
 
         for entry in header.split(',') {
             let mut parts = entry.split(';');
@@ -184,12 +195,30 @@ impl Format {
                 continue;
             }
 
-            if best.is_none_or(|(_, best_quality)| quality > best_quality) {
-                best = Some((format, quality));
+            // A repeated encoding keeps its strongest weight and its first position.
+            if let Some(existing) = ranked[..len]
+                .iter_mut()
+                .filter_map(Option::as_mut)
+                .find(|ranked| ranked.format == format)
+            {
+                existing.quality = existing.quality.max(quality);
+                continue;
             }
+
+            ranked[len] = Some(Ranked {
+                format,
+                quality,
+                order: len,
+            });
+            len += 1;
         }
 
-        best.map(|(format, _)| format)
+        // Sorting on the original position as well keeps ties in the order the client wrote them.
+        ranked[..len].sort_unstable_by_key(|entry| entry.map_or((Reverse(0), usize::MAX), |entry| (Reverse(entry.quality), entry.order)));
+
+        // `use<>` keeps the header's lifetime out of the return type: every entry is copied into
+        // the array above, so the caller is free to drop the header immediately.
+        ranked.into_iter().take(len).flatten().map(|entry| entry.format)
     }
 
     /// Starts configuring an encoder for this format.
@@ -245,6 +274,17 @@ impl Format {
 
         drain(|| decoder.pull())
     }
+}
+
+/// The most encodings a ranking can hold: one per format this build supports.
+const MAX_ACCEPTED: usize = Format::ALL.len();
+
+/// One acceptable encoding, with the weight and position it was given.
+#[derive(Debug, Clone, Copy)]
+struct Ranked {
+    format: Format,
+    quality: u16,
+    order: usize,
 }
 
 /// Reads the `q=` weight from an entry's parameters, as thousandths.
@@ -485,6 +525,11 @@ mod tests {
         BytesView::copied_from_slice(bytes, &GlobalPool::new())
     }
 
+    #[cfg(feature = "gzip")]
+    fn accepted(header: &str) -> Vec<Format> {
+        Format::from_accept_encoding(header).collect()
+    }
+
     fn encoded_len(builder: EncoderBuilder, payload: &[u8]) -> usize {
         let mut encoder = builder.build(GlobalPool::new());
         encoder.push(view(payload)).expect("push succeeds");
@@ -539,11 +584,11 @@ mod tests {
     #[test]
     fn accept_encoding_honours_quality_values() {
         // Real headers are weighted; a bare token match would pick whichever came first.
-        assert_eq!(Format::from_accept_encoding("gzip;q=0.5, deflate;q=0.9"), Some(Format::Zlib));
-        assert_eq!(Format::from_accept_encoding("gzip;q=0.9, deflate;q=0.5"), Some(Format::Gzip));
+        assert_eq!(accepted("gzip;q=0.5, deflate;q=0.9"), vec![Format::Zlib, Format::Gzip]);
+        assert_eq!(accepted("gzip;q=0.9, deflate;q=0.5"), vec![Format::Gzip, Format::Zlib]);
 
         // An absent weight means full preference.
-        assert_eq!(Format::from_accept_encoding("deflate;q=0.5, gzip"), Some(Format::Gzip));
+        assert_eq!(accepted("deflate;q=0.5, gzip"), vec![Format::Gzip, Format::Zlib]);
     }
 
     #[cfg(all(feature = "gzip", feature = "zlib"))]
@@ -551,9 +596,13 @@ mod tests {
     fn accept_encoding_treats_zero_quality_as_a_refusal() {
         // The trap a naive "strip the parameters" implementation falls into: q=0 means the client
         // will not accept that encoding at all.
-        assert_eq!(Format::from_accept_encoding("gzip;q=0"), None);
-        assert_eq!(Format::from_accept_encoding("gzip;q=0.000"), None);
-        assert_eq!(Format::from_accept_encoding("gzip;q=0, deflate"), Some(Format::Zlib));
+        assert_eq!(accepted("gzip;q=0"), vec![]);
+        assert_eq!(accepted("gzip;q=0.000"), vec![]);
+        assert_eq!(
+            accepted("gzip;q=0, deflate"),
+            vec![Format::Zlib],
+            "the refused encoding is dropped entirely"
+        );
     }
 
     #[cfg(feature = "gzip")]
@@ -570,29 +619,62 @@ mod tests {
             "*;q=0.1, gzip",
             "br;q=0.2, gzip;q=0.9",
         ] {
-            assert_eq!(Format::from_accept_encoding(header), Some(Format::Gzip), "failed on {header:?}");
+            assert_eq!(
+                Format::from_accept_encoding(header).next(),
+                Some(Format::Gzip),
+                "failed on {header:?}"
+            );
         }
     }
 
     #[cfg(feature = "gzip")]
     #[test]
     fn accept_encoding_ignores_what_it_cannot_use() {
-        assert_eq!(Format::from_accept_encoding(""), None);
-        assert_eq!(Format::from_accept_encoding("identity"), None);
-        assert_eq!(Format::from_accept_encoding("*"), None, "a wildcard names no specific encoding");
-        assert_eq!(Format::from_accept_encoding("zstd, lzma"), None, "unsupported encodings");
+        assert_eq!(accepted(""), vec![]);
+        assert_eq!(accepted("identity"), vec![]);
+        assert_eq!(accepted("*"), vec![], "a wildcard names no specific encoding");
+        assert_eq!(accepted("zstd, lzma"), vec![], "unsupported encodings");
 
         // A malformed weight is skipped rather than guessed at.
-        assert_eq!(Format::from_accept_encoding("gzip;q=nonsense"), None);
-        assert_eq!(Format::from_accept_encoding("gzip;q=2"), None, "quality above 1 is invalid");
-        assert_eq!(Format::from_accept_encoding("gzip;q=0.1234"), None, "more than three decimals");
+        assert_eq!(accepted("gzip;q=nonsense"), vec![]);
+        assert_eq!(accepted("gzip;q=2"), vec![], "quality above 1 is invalid");
+        assert_eq!(accepted("gzip;q=0.1234"), vec![], "more than three decimals");
     }
 
     #[cfg(all(feature = "gzip", feature = "zlib"))]
     #[test]
     fn accept_encoding_keeps_client_order_on_a_tie() {
-        assert_eq!(Format::from_accept_encoding("gzip;q=0.5, deflate;q=0.5"), Some(Format::Gzip));
-        assert_eq!(Format::from_accept_encoding("deflate;q=0.5, gzip;q=0.5"), Some(Format::Zlib));
+        assert_eq!(accepted("gzip;q=0.5, deflate;q=0.5"), vec![Format::Gzip, Format::Zlib]);
+        assert_eq!(accepted("deflate;q=0.5, gzip;q=0.5"), vec![Format::Zlib, Format::Gzip]);
+    }
+
+    #[cfg(all(feature = "gzip", feature = "zlib"))]
+    #[test]
+    fn a_repeated_encoding_keeps_its_strongest_weight() {
+        // A ranking holds one entry per format, so a repetitive header cannot overflow it.
+        assert_eq!(accepted("gzip;q=0.1, deflate;q=0.5, gzip;q=0.9"), vec![Format::Gzip, Format::Zlib]);
+        assert_eq!(accepted(&"gzip;q=0.5, ".repeat(100)), vec![Format::Gzip]);
+    }
+
+    #[cfg(feature = "gzip")]
+    #[test]
+    fn the_ranking_does_not_borrow_the_header() {
+        // The header is often a temporary; the iterator must outlive it.
+        let ranking = {
+            let header = String::from("gzip;q=0.9");
+            Format::from_accept_encoding(&header)
+        };
+
+        assert_eq!(ranking.collect::<Vec<_>>(), vec![Format::Gzip]);
+    }
+
+    #[cfg(all(feature = "gzip", feature = "zlib"))]
+    #[test]
+    fn a_caller_can_apply_its_own_policy_on_top_of_the_ranking() {
+        // The reason this yields every acceptable encoding instead of picking one.
+        let chosen = Format::from_accept_encoding("gzip;q=1.0, deflate;q=0.9").find(|format| *format != Format::Gzip);
+
+        assert_eq!(chosen, Some(Format::Zlib));
     }
 
     #[test]
