@@ -6,13 +6,13 @@
 //! so a format that behaves differently from its siblings — or an abstraction that quietly only
 //! fits the deflate family — fails here rather than surprising a consumer.
 
-#![cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#![cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
 use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
-use compressed::{Decoder, DecompressionLimits, Encoder, Format, Level, Output};
+use compressed::{Decoder, DecompressionLimits, Encoder, Format, Level, Output, Pool};
 
 fn view(bytes: &[u8]) -> BytesView {
     BytesView::copied_from_slice(bytes, &GlobalPool::new())
@@ -421,6 +421,293 @@ macro_rules! format_contract {
             }
 
             #[test]
+            fn pooling_does_not_change_the_output() {
+                // Reuse is an optimisation, so it must change nothing a caller can observe. The
+                // baseline and the pooled runs share one input view on purpose: some engines
+                // legitimately vary with input segmentation (zstd records the content size in its
+                // frame header only when the whole input arrives in one call), so a fresh view per
+                // run would compare allocator behaviour rather than pooling.
+                let pool = Pool::new();
+                let input = view(&payload());
+                let baseline = {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .build(GlobalPool::new());
+                    encode(&mut encoder, &input, usize::MAX).expect("compression succeeds")
+                };
+
+                // Several rounds: the first encoder always misses the pool, so only later rounds
+                // exercise a recycled engine.
+                for round in 0..5 {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .pool(pool.clone())
+                        .build(GlobalPool::new());
+                    let pooled = encode(&mut encoder, &input, usize::MAX).expect("compression succeeds");
+                    drop(encoder);
+
+                    assert_eq!(pooled.to_vec(), baseline.to_vec(), "round {round}: pooled output diverged");
+
+                    let mut decoder = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                    let plain = decode(&mut decoder, &pooled, usize::MAX).expect("decompression succeeds");
+
+                    assert_eq!(plain.to_vec(), payload(), "round {round}: pooled decoder lost data");
+                }
+            }
+
+            #[test]
+            fn an_engine_abandoned_mid_stream_is_cleaned_before_reuse() {
+                // A request cancelled part-way through returns a half-used engine.
+                let pool = Pool::new();
+                let input = view(&payload());
+                let baseline = {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .build(GlobalPool::new());
+                    encode(&mut encoder, &input, usize::MAX).expect("compression succeeds")
+                };
+
+                for round in 0..4 {
+                    {
+                        let mut abandoned = $module::Encoder::builder()
+                            .output_chunk_size(chunk(4096))
+                            .pool(pool.clone())
+                            .build(GlobalPool::new());
+                        abandoned.push(input.clone()).expect("push succeeds");
+                        let _ = Encoder::pull(&mut abandoned).expect("pull succeeds");
+                        // Dropped without finishing, so its engine is mid-frame.
+                    }
+
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .pool(pool.clone())
+                        .build(GlobalPool::new());
+                    let recovered = encode(&mut encoder, &input, usize::MAX).expect("compression succeeds");
+
+                    assert_eq!(recovered.to_vec(), baseline.to_vec(), "round {round}: a dirty engine leaked");
+                }
+            }
+
+            #[test]
+            fn an_engine_left_dirty_by_a_failed_decode_is_cleaned_before_reuse() {
+                let pool = Pool::new();
+                let encoded = $module::compress(view(&payload()), GlobalPool::new()).expect("compression succeeds");
+                let garbage = view(&b"definitely not a valid stream".repeat(20));
+
+                for round in 0..4 {
+                    {
+                        let mut failing = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                        let _ = decode(&mut failing, &garbage, usize::MAX);
+                    }
+
+                    let mut decoder = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                    let plain = decode(&mut decoder, &encoded, usize::MAX).expect("a clean stream still decodes");
+
+                    assert_eq!(plain.to_vec(), payload(), "round {round}: a failed decode poisoned the pool");
+                }
+            }
+
+            #[test]
+            fn levels_never_share_engines() {
+                // Resetting a compressor preserves its level, so engines must be keyed by it.
+                let pool = Pool::new();
+                let input = view(&payload());
+                let levels = [Level::NONE, Level::FAST, Level::DEFAULT, Level::BEST];
+
+                let baselines: Vec<_> = levels
+                    .iter()
+                    .map(|&level| {
+                        let mut encoder = $module::Encoder::builder()
+                            .level(level)
+                            .output_chunk_size(chunk(4096))
+                            .build(GlobalPool::new());
+                        encode(&mut encoder, &input, usize::MAX)
+                            .expect("compression succeeds")
+                            .to_vec()
+                    })
+                    .collect();
+
+                for round in 0..4 {
+                    for (index, &level) in levels.iter().enumerate() {
+                        let mut encoder = $module::Encoder::builder()
+                            .level(level)
+                            .output_chunk_size(chunk(4096))
+                            .pool(pool.clone())
+                            .build(GlobalPool::new());
+                        let pooled = encode(&mut encoder, &input, usize::MAX).expect("compression succeeds");
+
+                        assert_eq!(
+                            pooled.to_vec(),
+                            baselines[index],
+                            "round {round}: a pooled engine came back at the wrong level"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn two_live_codecs_get_distinct_engines() {
+                // All three encoders are driven by exactly the same sequence, so any difference in
+                // their output is the engine and nothing else.
+                fn run(encoder: &mut $module::Encoder, input: &BytesView) -> Vec<u8> {
+                    encoder.push(input.clone()).expect("push succeeds");
+                    Encoder::finish(encoder);
+
+                    let mut parts = Vec::new();
+                    while let Some(chunk) = Encoder::pull(encoder).expect("pull succeeds").into_data() {
+                        parts.push(chunk);
+                    }
+
+                    BytesView::from_views(parts).to_vec()
+                }
+
+                fn build(pool: Option<&Pool>) -> $module::Encoder {
+                    let builder = $module::Encoder::builder().output_chunk_size(chunk(4096));
+                    match pool {
+                        Some(pool) => builder.pool(pool.clone()).build(GlobalPool::new()),
+                        None => builder.build(GlobalPool::new()),
+                    }
+                }
+
+                let pool = Pool::new();
+                let input = view(&payload());
+                let baseline = run(&mut build(None), &input);
+
+                // Prime the pool so there is exactly one idle engine for two codecs to want.
+                drop(run(&mut build(Some(&pool)), &input));
+
+                let mut first = build(Some(&pool));
+                let mut second = build(Some(&pool));
+
+                // Interleave: both are live before either finishes, so they cannot be sharing.
+                first.push(input.clone()).expect("push succeeds");
+                second.push(input.clone()).expect("push succeeds");
+                Encoder::finish(&mut first);
+                Encoder::finish(&mut second);
+
+                for (label, encoder) in [("first", &mut first), ("second", &mut second)] {
+                    let mut parts = Vec::new();
+                    while let Some(chunk) = Encoder::pull(encoder).expect("pull succeeds").into_data() {
+                        parts.push(chunk);
+                    }
+
+                    assert_eq!(
+                        BytesView::from_views(parts).to_vec(),
+                        baseline,
+                        "{label} encoder was corrupted by sharing"
+                    );
+                }
+            }
+
+            #[test]
+            fn a_codec_outliving_its_pool_handle_still_works() {
+                let input = view(&payload());
+                let baseline = {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .build(GlobalPool::new());
+                    encode(&mut encoder, &input, usize::MAX).expect("compression succeeds")
+                };
+
+                let mut encoder = {
+                    let pool = Pool::new();
+                    let encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .pool(pool.clone())
+                        .build(GlobalPool::new());
+                    drop(pool);
+                    encoder
+                };
+
+                let pooled = encode(&mut encoder, &input, usize::MAX).expect("compression succeeds");
+
+                assert_eq!(
+                    pooled.to_vec(),
+                    baseline.to_vec(),
+                    "dropping the pool handle changed the output"
+                );
+            }
+
+            #[test]
+            fn pool_capacity_bounds_retention_without_changing_output() {
+                let input = view(&payload());
+                let baseline = {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .build(GlobalPool::new());
+                    encode(&mut encoder, &input, usize::MAX).expect("compression succeeds")
+                };
+
+                for capacity in [0_usize, 1, 4] {
+                    let pool = Pool::with_capacity(capacity);
+                    assert_eq!(pool.capacity(), capacity);
+
+                    for round in 0..12 {
+                        let mut encoder = $module::Encoder::builder()
+                            .output_chunk_size(chunk(4096))
+                            .pool(pool.clone())
+                            .build(GlobalPool::new());
+                        let pooled = encode(&mut encoder, &input, usize::MAX).expect("compression succeeds");
+
+                        assert_eq!(
+                            pooled.to_vec(),
+                            baseline.to_vec(),
+                            "capacity {capacity} round {round}: output changed"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn empty_input_round_trips_through_a_pool() {
+                let pool = Pool::new();
+                let baseline = {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .build(GlobalPool::new());
+                    encode(&mut encoder, &BytesView::new(), usize::MAX).expect("compression succeeds")
+                };
+
+                for round in 0..4 {
+                    let mut encoder = $module::Encoder::builder()
+                        .output_chunk_size(chunk(4096))
+                        .pool(pool.clone())
+                        .build(GlobalPool::new());
+                    let pooled = encode(&mut encoder, &BytesView::new(), usize::MAX).expect("compression succeeds");
+                    drop(encoder);
+
+                    assert_eq!(pooled.to_vec(), baseline.to_vec(), "round {round}: empty framing changed");
+
+                    let mut decoder = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                    let plain = decode(&mut decoder, &pooled, usize::MAX).expect("decompression succeeds");
+
+                    assert!(plain.is_empty(), "round {round}: empty input produced bytes");
+                }
+            }
+
+            #[test]
+            fn truncation_is_still_detected_when_pooled() {
+                let pool = Pool::new();
+                let encoded = $module::compress(view(&payload()), GlobalPool::new()).expect("compression succeeds");
+
+                for round in 0..3 {
+                    // A healthy decode first, so the next decoder is guaranteed to be recycled.
+                    let mut healthy = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                    decode(&mut healthy, &encoded, usize::MAX).expect("the full stream decodes");
+                    drop(healthy);
+
+                    let mut decoder = $module::Decoder::builder().pool(pool.clone()).build(GlobalPool::new());
+                    let error = decode(&mut decoder, &encoded.range(0..encoded.len() - 1), usize::MAX)
+                        .expect_err("a truncated stream must not decode successfully");
+
+                    assert!(
+                        error.is_unexpected_end_of_stream() || error.is_corrupt_data(),
+                        "round {round}: unexpected classification {error}"
+                    );
+                }
+            }
+
+            #[test]
             fn works_through_generic_format_agnostic_code() {
                 /// Code written once, against the traits, with no knowledge of the format.
                 fn transcode(mut encoder: impl Encoder, mut decoder: impl Decoder, data: &[u8]) -> Vec<u8> {
@@ -448,6 +735,8 @@ format_contract!(zlib, Format::Zlib);
 format_contract!(gzip, Format::Gzip);
 #[cfg(feature = "brotli")]
 format_contract!(brotli, Format::Brotli);
+#[cfg(feature = "zstd")]
+format_contract!(zstd, Format::Zstd);
 
 #[test]
 fn every_compiled_format_satisfies_the_contract() {
@@ -455,7 +744,8 @@ fn every_compiled_format_satisfies_the_contract() {
     let covered = usize::from(cfg!(feature = "deflate"))
         + usize::from(cfg!(feature = "zlib"))
         + usize::from(cfg!(feature = "gzip"))
-        + usize::from(cfg!(feature = "brotli"));
+        + usize::from(cfg!(feature = "brotli"))
+        + usize::from(cfg!(feature = "zstd"));
 
     assert_eq!(
         Format::ALL.len(),
@@ -643,7 +933,7 @@ mod format_specific_settings {
 /// Engine reuse must be invisible: a recycled encoder has to behave exactly like a fresh one.
 #[cfg(feature = "gzip")]
 mod pooling {
-    use compressed::{Pool, gzip};
+    use compressed::gzip;
 
     use super::*;
 
@@ -814,5 +1104,135 @@ mod pooling {
         let encoded = encode_with(Some(pool), Level::DEFAULT, &payload);
 
         assert_eq!(gzip::decompress(encoded, GlobalPool::new()).expect("decode").to_vec(), payload);
+    }
+}
+
+/// The riskiest pooling bug: deflate, zlib and gzip share one engine type, so a mis-keyed pool
+/// would hand a zlib compressor to a gzip request and emit a well-formed stream in the wrong
+/// format. Nothing else in the suite would catch that.
+#[test]
+fn formats_never_share_pooled_engines() {
+    let pool = Pool::new();
+    let data = b"interleaved through one pool ".repeat(200);
+    let input = view(&data);
+
+    let baselines: Vec<_> = Format::ALL
+        .iter()
+        .map(|&format| {
+            let mut encoder = format.encoder().output_chunk_size(chunk(4096)).build(GlobalPool::new());
+            let bytes = encode(&mut *encoder, &input, usize::MAX).expect("compression succeeds").to_vec();
+            (format, bytes)
+        })
+        .collect();
+
+    // Interleave, so every format has had a turn before any is asked again.
+    for round in 0..6 {
+        for (format, baseline) in &baselines {
+            let mut encoder = format
+                .encoder()
+                .output_chunk_size(chunk(4096))
+                .pool(pool.clone())
+                .build(GlobalPool::new());
+            let pooled = encode(&mut *encoder, &input, usize::MAX).expect("compression succeeds");
+            drop(encoder);
+
+            assert_eq!(
+                &pooled.to_vec(),
+                baseline,
+                "{format:?} round {round}: interleaving formats through one pool changed the output"
+            );
+
+            // And the bytes really are this format's, not a sibling's that happens to decode.
+            for (other, _) in &baselines {
+                let mut reader = other.decoder().pool(pool.clone()).build(GlobalPool::new());
+                let decoded = decode(&mut *reader, &pooled, usize::MAX);
+
+                if other == format {
+                    assert_eq!(
+                        decoded.expect("its own decoder must accept it").to_vec(),
+                        data,
+                        "{format:?} round {round}: own decoder failed"
+                    );
+                } else if let Ok(plain) = decoded {
+                    assert_ne!(plain.to_vec(), data, "{other:?} decoded a {format:?} stream as its own");
+                }
+            }
+        }
+    }
+}
+
+/// One pool shared by many threads, the way a client would actually use it.
+#[test]
+fn a_shared_pool_is_correct_under_concurrency() {
+    let pool = Pool::new();
+    let data = b"concurrent request body ".repeat(150);
+
+    let baselines: Vec<_> = Format::ALL
+        .iter()
+        .map(|&format| {
+            let input = view(&data);
+            let mut encoder = format.encoder().output_chunk_size(chunk(4096)).build(GlobalPool::new());
+            let bytes = encode(&mut *encoder, &input, usize::MAX).expect("compression succeeds").to_vec();
+            (format, bytes)
+        })
+        .collect();
+
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let pool = pool.clone();
+            let data = data.clone();
+            let baselines = baselines.clone();
+
+            scope.spawn(move || {
+                // Each thread builds its own view, so segmentation is stable within the thread.
+                let input = view(&data);
+
+                for round in 0..10 {
+                    for (format, baseline) in &baselines {
+                        let mut encoder = format
+                            .encoder()
+                            .output_chunk_size(chunk(4096))
+                            .pool(pool.clone())
+                            .build(GlobalPool::new());
+                        let pooled = encode(&mut *encoder, &input, usize::MAX).expect("compression succeeds");
+                        drop(encoder);
+
+                        assert_eq!(&pooled.to_vec(), baseline, "{format:?} round {round}: concurrent pooling diverged");
+
+                        let mut decoder = format.decoder().pool(pool.clone()).build(GlobalPool::new());
+                        let plain = decode(&mut *decoder, &pooled, usize::MAX).expect("decompression succeeds");
+
+                        assert_eq!(plain.to_vec(), data, "{format:?} round {round}: concurrent decode lost data");
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// A long run must not drift: the hundredth message has to match the first.
+#[test]
+fn pooled_output_does_not_drift_over_many_reuses() {
+    let pool = Pool::new();
+    let data = b"steady state ".repeat(120);
+
+    for &format in Format::ALL {
+        let input = view(&data);
+        let mut first: Option<Vec<u8>> = None;
+
+        for round in 0..60 {
+            let mut encoder = format
+                .encoder()
+                .output_chunk_size(chunk(4096))
+                .pool(pool.clone())
+                .build(GlobalPool::new());
+            let pooled = encode(&mut *encoder, &input, usize::MAX).expect("compression succeeds").to_vec();
+            drop(encoder);
+
+            match first {
+                None => first = Some(pooled),
+                Some(ref expected) => assert_eq!(&pooled, expected, "{format:?} round {round}: output drifted"),
+            }
+        }
     }
 }

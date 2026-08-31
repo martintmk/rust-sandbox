@@ -28,6 +28,10 @@ mod sealed {
     impl Sealed for crate::zlib::Encoder {}
     #[cfg(feature = "zlib")]
     impl Sealed for crate::zlib::Decoder {}
+    #[cfg(feature = "zstd")]
+    impl Sealed for crate::zstd::Encoder {}
+    #[cfg(feature = "zstd")]
+    impl Sealed for crate::zstd::Decoder {}
 
     impl Sealed for alloc::boxed::Box<dyn super::Encoder> {}
     impl Sealed for alloc::boxed::Box<dyn super::Decoder> {}
@@ -121,7 +125,7 @@ pub trait Decoder: sealed::Sealed + fmt::Debug + Send + Sync {
 }
 
 /// Forwards the trait methods to a format module's inherent methods.
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 macro_rules! impl_codec_traits {
     ($($module:ident),+ $(,)?) => {
         $(
@@ -164,6 +168,8 @@ impl_codec_traits!(deflate);
 impl_codec_traits!(gzip);
 #[cfg(feature = "zlib")]
 impl_codec_traits!(zlib);
+#[cfg(feature = "zstd")]
+impl_codec_traits!(zstd);
 
 // A boxed codec is itself a codec, so anything that accepts `impl Encoder` also accepts the
 // runtime-selected `Box<dyn Encoder>` that `Format::encoder` returns.

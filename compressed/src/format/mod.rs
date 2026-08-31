@@ -10,7 +10,7 @@
 //! returns live here so they do not collide with the per-format builders such as
 //! [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder].
 
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 pub(crate) mod macros;
 
 use std::cmp::Reverse;
@@ -61,6 +61,9 @@ pub enum Format {
     /// Brotli, RFC 7932. See [`brotli`][crate::brotli]. Requires the `brotli` feature.
     #[cfg(feature = "brotli")]
     Brotli,
+    /// Zstandard, RFC 8878. See [`zstd`][crate::zstd]. Requires the `zstd` feature.
+    #[cfg(feature = "zstd")]
+    Zstd,
 }
 
 impl Format {
@@ -76,6 +79,8 @@ impl Format {
         Self::Gzip,
         #[cfg(feature = "brotli")]
         Self::Brotli,
+        #[cfg(feature = "zstd")]
+        Self::Zstd,
     ];
 
     /// The HTTP `Content-Encoding` token for this format, if it has one.
@@ -100,6 +105,8 @@ impl Format {
             Self::Gzip => Some("gzip"),
             #[cfg(feature = "brotli")]
             Self::Brotli => Some("br"),
+            #[cfg(feature = "zstd")]
+            Self::Zstd => Some("zstd"),
         }
     }
 
@@ -130,7 +137,12 @@ impl Format {
             return Some(Self::Brotli);
         }
 
-        #[cfg(not(any(feature = "brotli", feature = "gzip", feature = "zlib")))]
+        #[cfg(feature = "zstd")]
+        if token.eq_ignore_ascii_case("zstd") {
+            return Some(Self::Zstd);
+        }
+
+        #[cfg(not(any(feature = "brotli", feature = "gzip", feature = "zlib", feature = "zstd")))]
         let _ = token;
 
         None
@@ -416,6 +428,8 @@ impl EncoderBuilder {
             Format::Gzip => build!(gzip),
             #[cfg(feature = "brotli")]
             Format::Brotli => build!(brotli),
+            #[cfg(feature = "zstd")]
+            Format::Zstd => build!(zstd),
         }
     }
 }
@@ -510,6 +524,8 @@ impl DecoderBuilder {
             Format::Gzip => build!(gzip),
             #[cfg(feature = "brotli")]
             Format::Brotli => build!(brotli),
+            #[cfg(feature = "zstd")]
+            Format::Zstd => build!(zstd),
         }
     }
 }
@@ -633,7 +649,7 @@ mod tests {
         assert_eq!(accepted(""), vec![]);
         assert_eq!(accepted("identity"), vec![]);
         assert_eq!(accepted("*"), vec![], "a wildcard names no specific encoding");
-        assert_eq!(accepted("zstd, lzma"), vec![], "unsupported encodings");
+        assert_eq!(accepted("lzma, snappy"), vec![], "unsupported encodings");
 
         // A malformed weight is skipped rather than guessed at.
         assert_eq!(accepted("gzip;q=nonsense"), vec![]);
@@ -808,7 +824,8 @@ mod tests {
         let expected = usize::from(cfg!(feature = "deflate"))
             + usize::from(cfg!(feature = "zlib"))
             + usize::from(cfg!(feature = "gzip"))
-            + usize::from(cfg!(feature = "brotli"));
+            + usize::from(cfg!(feature = "brotli"))
+            + usize::from(cfg!(feature = "zstd"));
 
         assert_eq!(Format::ALL.len(), expected);
     }

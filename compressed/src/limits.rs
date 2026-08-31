@@ -11,7 +11,10 @@ use crate::error::{Error, Result};
 /// infinitely bad expansion ratio and be rejected. 32 KiB is far below any size at which a
 /// decompression bomb becomes a memory-exhaustion risk.
 #[cfg_attr(
-    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    all(
+        not(test),
+        not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+    ),
     expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
 )]
 const RATIO_FLOOR_BYTES: u64 = 32 * 1024;
@@ -30,7 +33,10 @@ enum Limit<T> {
 
 impl<T> Limit<T> {
     #[cfg_attr(
-        all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+        all(
+            not(test),
+            not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+        ),
         expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
     )]
     fn resolve(self, default: Option<T>) -> Option<T> {
@@ -144,7 +150,10 @@ impl DecompressionLimits {
 
     /// Applies these overrides on top of a format's defaults.
     #[cfg_attr(
-        all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+        all(
+            not(test),
+            not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+        ),
         expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
     )]
     pub(crate) fn resolve(self, defaults: FormatLimits) -> FormatLimits {
@@ -159,7 +168,10 @@ impl DecompressionLimits {
 ///
 /// Private: formats declare their defaults as constants of this type, and the decoders enforce it.
 #[cfg_attr(
-    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    all(
+        not(test),
+        not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+    ),
     expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +181,10 @@ pub(crate) struct FormatLimits {
 }
 
 #[cfg_attr(
-    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    all(
+        not(test),
+        not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+    ),
     expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
 )]
 impl FormatLimits {

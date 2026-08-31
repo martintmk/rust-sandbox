@@ -159,12 +159,12 @@ pub mod brotli;
 mod codec;
 #[cfg(feature = "deflate")]
 pub mod deflate;
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 mod engine;
 mod error;
 #[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod flate;
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 pub mod format;
 #[cfg(feature = "gzip")]
 pub mod gzip;
@@ -174,13 +174,15 @@ mod output;
 mod pool;
 #[cfg(feature = "zlib")]
 pub mod zlib;
+#[cfg(feature = "zstd")]
+pub mod zstd;
 
 #[cfg(feature = "futures-stream")]
 mod stream;
 
 pub use codec::{Decoder, Encoder};
 pub use error::{Error, Result};
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 pub use format::Format;
 pub use level::Level;
 pub use limits::DecompressionLimits;

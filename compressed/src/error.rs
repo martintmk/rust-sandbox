@@ -42,7 +42,10 @@ pub struct Error {
 }
 
 #[cfg_attr(
-    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    all(
+        not(test),
+        not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
+    ),
     expect(dead_code, reason = "only the codecs construct these, and no format is enabled")
 )]
 impl Error {

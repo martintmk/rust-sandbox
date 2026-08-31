@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytesbuf::BytesView;
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 use bytesbuf::mem::MemoryShared;
 use futures_core::Stream;
 use pin_project_lite::pin_project;
@@ -179,6 +179,13 @@ impl<S> CompressStream<S> {
     #[must_use]
     pub fn brotli(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::brotli::Encoder::new(memory))
+    }
+
+    /// Compresses `source` as zstd at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[cfg(feature = "zstd")]
+    #[must_use]
+    pub fn zstd(source: S, memory: impl MemoryShared) -> Self {
+        Self::new(source, crate::zstd::Encoder::new(memory))
     }
 
     /// Compresses `source` with a pre-configured encoder.

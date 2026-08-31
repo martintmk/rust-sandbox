@@ -2,11 +2,11 @@
 
 //! Reuse of compression engine state across codecs.
 
-#[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-#[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
+#[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 use std::sync::Mutex;
 
 #[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
@@ -97,6 +97,7 @@ pub(crate) struct EngineKey {
 /// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] / [`gzip`][crate::gzip] compressor | yes — `reset` preserves its container and level |
 /// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] decompressor | yes — `reset` restores the framing |
 /// | [`gzip`][crate::gzip] decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
+/// | [`zstd`][crate::zstd] compressor and decompressor | yes — `reset` keeps the context's allocations, which is where most of the cost is |
 /// | [`brotli`][crate::brotli] encoder and decoder | no — no reset exists upstream |
 ///
 /// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
@@ -121,6 +122,12 @@ struct Inner {
     /// Decompressors carry no level, so the container alone identifies them.
     #[cfg(any(feature = "deflate", feature = "zlib"))]
     decompressors: Mutex<HashMap<Wrapper, Vec<flate2::Decompress>>>,
+    /// Zstd contexts allocate their working memory lazily, so recycling them saves far more than
+    /// their construction cost suggests.
+    #[cfg(feature = "zstd")]
+    zstd_compressors: Mutex<HashMap<i32, Vec<zstd_safe::CCtx<'static>>>>,
+    #[cfg(feature = "zstd")]
+    zstd_decompressors: Mutex<Vec<zstd_safe::DCtx<'static>>>,
     capacity: usize,
 }
 
@@ -143,6 +150,10 @@ impl Pool {
                 compressors: Mutex::new(HashMap::new()),
                 #[cfg(any(feature = "deflate", feature = "zlib"))]
                 decompressors: Mutex::new(HashMap::new()),
+                #[cfg(feature = "zstd")]
+                zstd_compressors: Mutex::new(HashMap::new()),
+                #[cfg(feature = "zstd")]
+                zstd_decompressors: Mutex::new(Vec::new()),
                 capacity,
             }),
         }
@@ -207,6 +218,56 @@ impl Pool {
             if idle.len() < self.inner.capacity {
                 idle.push(engine);
             }
+        }
+    }
+
+    /// Takes an idle zstd compressor built for `level`, or reports that one must be built.
+    ///
+    /// Resetting the session drops any half-written frame while keeping the context's allocations,
+    /// which is where the saving comes from.
+    #[cfg(feature = "zstd")]
+    pub(crate) fn take_zstd_compressor(&self, level: i32) -> Option<zstd_safe::CCtx<'static>> {
+        let mut context = self.inner.zstd_compressors.lock().ok()?.get_mut(&level).and_then(Vec::pop)?;
+
+        context.reset(zstd_safe::ResetDirective::SessionAndParameters).ok()?;
+        Some(context)
+    }
+
+    /// Returns a zstd compressor for reuse, dropping it if the pool is already full.
+    #[cfg(feature = "zstd")]
+    pub(crate) fn return_zstd_compressor(&self, level: i32, context: zstd_safe::CCtx<'static>) {
+        if self.inner.capacity == 0 {
+            return;
+        }
+
+        if let Ok(mut guard) = self.inner.zstd_compressors.lock() {
+            let idle = guard.entry(level).or_default();
+            if idle.len() < self.inner.capacity {
+                idle.push(context);
+            }
+        }
+    }
+
+    /// Takes an idle zstd decompressor, or reports that one must be built.
+    #[cfg(feature = "zstd")]
+    pub(crate) fn take_zstd_decompressor(&self) -> Option<zstd_safe::DCtx<'static>> {
+        let mut context = self.inner.zstd_decompressors.lock().ok()?.pop()?;
+
+        context.reset(zstd_safe::ResetDirective::SessionAndParameters).ok()?;
+        Some(context)
+    }
+
+    /// Returns a zstd decompressor for reuse, dropping it if the pool is already full.
+    #[cfg(feature = "zstd")]
+    pub(crate) fn return_zstd_decompressor(&self, context: zstd_safe::DCtx<'static>) {
+        if self.inner.capacity == 0 {
+            return;
+        }
+
+        if let Ok(mut guard) = self.inner.zstd_decompressors.lock()
+            && guard.len() < self.inner.capacity
+        {
+            guard.push(context);
         }
     }
 }
