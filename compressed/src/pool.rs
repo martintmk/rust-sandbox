@@ -98,7 +98,7 @@ pub(crate) struct EngineKey {
 /// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] decompressor | yes — `reset` restores the framing |
 /// | [`gzip`][crate::gzip] decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
 /// | [`zstd`][crate::zstd] compressor and decompressor | yes — `reset` keeps the context's allocations, which is where most of the cost is |
-/// | [`brotli`][crate::brotli] encoder and decoder | no — no reset exists upstream |
+/// | [`brotli`][crate::brotli] encoder and decoder | no — upstream exposes no reset, and recycling its buffers through a custom allocator was measured and did not pay for itself |
 ///
 /// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
 /// the fixed setup cost is a comparable share of the work either way.

@@ -73,10 +73,21 @@ pub enum Mode {
 
 /// The base-2 logarithm of brotli's sliding window, in bytes.
 ///
-/// A larger window finds matches further back, improving the ratio on large inputs at the cost of
-/// memory in both the encoder and every decoder that reads the stream. This is a newtype rather
-/// than a bare `u8` for the same reason [`Level`] is: an out-of-range value is a configuration
-/// mistake to report, not a panic to suffer.
+/// A larger window lets the encoder find matches further back, which is what helps on large inputs.
+///
+/// It is tempting to read this as a memory dial and shrink it to economise. Measurement says
+/// otherwise, and in more than one direction. Encoder memory and throughput do not fall off
+/// smoothly as the window shrinks: below a threshold the encoder allocates *more* and runs
+/// *slower*, so a small window can cost on every axis at once. The ratio is not monotonic either,
+/// because a window comparable to the payload can beat a much larger one. Decoder memory tracks
+/// the data actually decoded rather than the window the encoder declared, so a small window is not
+/// a reliable way to spare the reader.
+///
+/// The practical advice is to leave this alone unless a measurement on real payloads says
+/// otherwise.
+///
+/// This is a newtype rather than a bare `u8` for the same reason [`Level`] is: an out-of-range
+/// value is a configuration mistake to report, not a panic to suffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowSize(u8);
 

@@ -77,8 +77,19 @@ fn chunk(size: usize) -> NonZeroUsize {
 }
 
 /// Compresses a view, returning the output so the optimiser cannot discard the work.
-fn compress(format: Format, pool: Option<&Pool>, chunk_size: Option<NonZeroUsize>, input: &BytesView, memory: &GlobalPool) -> BytesView {
+fn compress(
+    format: Format,
+    level: Option<Level>,
+    pool: Option<&Pool>,
+    chunk_size: Option<NonZeroUsize>,
+    input: &BytesView,
+    memory: &GlobalPool,
+) -> BytesView {
     let builder = format.encoder();
+    let builder = match level {
+        Some(level) => builder.level(level),
+        None => builder,
+    };
     let builder = match chunk_size {
         Some(size) => builder.output_chunk_size(size),
         None => builder,
@@ -119,6 +130,20 @@ fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &G
     BytesView::from_views(parts)
 }
 
+/// Compresses with an explicit brotli window, which the runtime `Format` builder cannot express.
+fn encode_brotli(window: WindowSize, input: &BytesView, memory: &GlobalPool) -> BytesView {
+    let mut encoder = brotli::Encoder::builder().window_size(window).build(memory.clone());
+    encoder.push(input.clone()).expect("push succeeds");
+    encoder.finish();
+
+    let mut parts = Vec::new();
+    while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
+        parts.push(data);
+    }
+
+    BytesView::from_views(parts)
+}
+
 /// Runs `body` under Criterion while attributing its allocations to `operation`.
 fn measured(bencher: &mut criterion::Bencher<'_>, operation: &Operation, mut body: impl FnMut()) {
     bencher.iter_custom(|iterations| {
@@ -148,7 +173,7 @@ fn compression(criterion: &mut Criterion, session: &Session) {
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
-                    black_box(compress(format, None, None, &input, &memory));
+                    black_box(compress(format, None, None, None, &input, &memory));
                 });
             });
         }
@@ -166,7 +191,7 @@ fn decompression(criterion: &mut Criterion, session: &Session) {
 
         for &format in Format::ALL {
             let memory = GlobalPool::new();
-            let encoded = compress(format, None, None, &view(&bytes, &memory), &memory);
+            let encoded = compress(format, None, None, None, &view(&bytes, &memory), &memory);
             let name = format!("{format:?}/{size}");
             let operation = session.operation(&format!("decompress {name}"));
 
@@ -194,10 +219,10 @@ fn pooling(criterion: &mut Criterion, session: &Session) {
         let memory = GlobalPool::new();
         let input = view(&bytes, &memory);
         let pool = Pool::new();
-        let encoded = compress(format, None, None, &input, &memory);
+        let encoded = compress(format, None, None, None, &input, &memory);
 
         // Warm the pool so the measured iterations all hit it.
-        drop(compress(format, Some(&pool), None, &input, &memory));
+        drop(compress(format, None, Some(&pool), None, &input, &memory));
         drop(decompress(format, Some(&pool), &encoded, &memory));
 
         for (label, pooled) in [("fresh", None), ("pooled", Some(&pool))] {
@@ -206,7 +231,7 @@ fn pooling(criterion: &mut Criterion, session: &Session) {
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
-                    black_box(compress(format, pooled, None, &input, &memory));
+                    black_box(compress(format, None, pooled, None, &input, &memory));
                 });
             });
 
@@ -243,7 +268,7 @@ fn segmentation(criterion: &mut Criterion, session: &Session) {
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
-                black_box(compress(format, None, None, &input, &memory));
+                black_box(compress(format, None, None, None, &input, &memory));
             });
         });
     }
@@ -252,7 +277,7 @@ fn segmentation(criterion: &mut Criterion, session: &Session) {
     let operation = session.operation("segment contiguous");
     group.bench_function(BenchmarkId::from_parameter("contiguous"), |bencher| {
         measured(bencher, &operation, || {
-            black_box(compress(format, None, None, &contiguous, &memory));
+            black_box(compress(format, None, None, None, &contiguous, &memory));
         });
     });
 
@@ -278,7 +303,7 @@ fn chunk_size(criterion: &mut Criterion, session: &Session) {
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
-                black_box(compress(format, None, Some(chunk(size)), &input, &memory));
+                black_box(compress(format, None, None, Some(chunk(size)), &input, &memory));
             });
         });
     }
@@ -302,17 +327,7 @@ fn levels(criterion: &mut Criterion, session: &Session) {
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
-                    let encoder = format.encoder().level(level);
-                    let mut encoder = encoder.build(memory.clone());
-                    encoder.push(input.clone()).expect("push succeeds");
-                    encoder.finish();
-
-                    let mut total = 0;
-                    while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-                        total += data.len();
-                    }
-
-                    black_box(total);
+                    black_box(compress(format, Some(level), None, None, &input, &memory));
                 });
             });
         }
@@ -344,21 +359,92 @@ fn brotli_window(criterion: &mut Criterion, session: &Session) {
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
-                let mut encoder = brotli::Encoder::builder().window_size(window).build(memory.clone());
-                encoder.push(input.clone()).expect("push succeeds");
-                encoder.finish();
+                black_box(encode_brotli(window, &input, &memory));
+            });
+        });
 
-                let mut total = 0;
-                while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-                    total += data.len();
-                }
+        // The decoder side matters independently: the window is recorded in the stream, so a
+        // reader inherits whatever the writer chose.
+        let encoded = encode_brotli(window, &input, &memory);
+        let operation = session.operation(&format!("brotli window {name} decode"));
 
-                black_box(total);
+        group.bench_function(BenchmarkId::from_parameter(format!("{name}/decode")), |bencher| {
+            measured(bencher, &operation, || {
+                black_box(decompress(Format::Brotli, None, &encoded, &memory));
             });
         });
     }
 
     group.finish();
+}
+
+/// Prints the ratio each format and level achieves.
+///
+/// The timing and allocation groups measure what a setting costs but not what it buys, which
+/// leaves the level groups undecidable on their own. Ratio is deterministic, so it is computed
+/// once rather than benchmarked.
+fn ratios() {
+    let memory = GlobalPool::new();
+    let bytes = payload(64 * 1024);
+    let input = view(&bytes, &memory);
+
+    println!("\nCompression ratio (64 KiB of JSON-like input):\n");
+    println!("| Format  | Level | Ratio |");
+    println!("|---------|-------|-------|");
+
+    for &format in Format::ALL {
+        for level in [Level::FAST, Level::DEFAULT, Level::BEST] {
+            let encoded = compress(format, Some(level), None, None, &input, &memory);
+
+            #[expect(clippy::cast_precision_loss, reason = "a ratio needs no more precision than this")]
+            let ratio = bytes.len() as f64 / encoded.len() as f64;
+
+            println!("| {:<7} | {:<5} | {ratio:>5.2} |", format!("{format:?}"), level.get());
+        }
+    }
+
+    println!("\nCompression ratio by brotli window (64 KiB):\n");
+    println!("| Window | Ratio |");
+    println!("|--------|-------|");
+
+    for exponent in [10_u8, 16, 18, 22] {
+        let window = WindowSize::new(exponent).expect("exponents are in range");
+        let encoded = encode_brotli(window, &input, &memory);
+
+        #[expect(clippy::cast_precision_loss, reason = "a ratio needs no more precision than this")]
+        let ratio = bytes.len() as f64 / encoded.len() as f64;
+
+        println!("| 2^{exponent:<4} | {ratio:>5.2} |");
+    }
+}
+
+/// Reports zstd's real working-set size, which the global allocator cannot see.
+///
+/// `zstd` allocates its contexts through its own allocator, so every zstd row in the allocation
+/// table understates the cost. Asking zstd itself restores the comparison.
+fn zstd_footprint() {
+    let mut buffer = vec![0_u8; 128 * 1024];
+    let bytes = payload(64 * 1024);
+
+    println!("\nzstd working set, reported by zstd itself:\n");
+    println!("| Level | CCtx bytes | DCtx bytes |");
+    println!("|-------|------------|------------|");
+
+    for level in [Level::FAST, Level::DEFAULT, Level::BEST] {
+        // The contexts allocate lazily, so measure only after real work has sized them.
+        let mut context = zstd_safe::CCtx::create();
+        let written = context
+            .compress(&mut buffer[..], &bytes, i32::from(level.get()))
+            .expect("compression succeeds");
+
+        let mut decoder = zstd_safe::DCtx::create();
+        let mut plain = vec![0_u8; bytes.len()];
+        decoder
+            .decompress(&mut plain[..], &buffer[..written])
+            .expect("decompression succeeds");
+
+        println!("| {:<5} | {:>10} | {:>10} |", level.get(), context.sizeof(), decoder.sizeof());
+    }
 }
 
 fn benches(criterion: &mut Criterion) {
@@ -372,6 +458,9 @@ fn benches(criterion: &mut Criterion) {
     chunk_size(criterion, &session);
     levels(criterion, &session);
     brotli_window(criterion, &session);
+
+    ratios();
+    zstd_footprint();
 }
 
 criterion_group!(codec, benches);

@@ -6,6 +6,12 @@
 /// Exposing the engine's type would make the engine part of this crate's semver surface, so
 /// swapping or upgrading it would become a breaking change for every consumer.
 ///
+/// The scale is portable but its *cost* is not, and the difference between formats is large. On
+/// the deflate family and on zstd, moving up the scale changes the time taken but barely moves the
+/// memory used. On brotli both climb steeply towards the top of the range, while the ratio gained
+/// over the middle of the range stays small. Treat [`Level::BEST`] as a deliberate choice to be
+/// measured on real payloads, not as a free improvement.
+///
 /// ```
 /// use compressed::Level;
 ///
@@ -26,7 +32,9 @@ impl Level {
     /// A balanced trade-off between speed and compression ratio.
     pub const DEFAULT: Self = Self(6);
 
-    /// The best compression ratio, at the highest cost in time.
+    /// The best compression ratio, at the highest cost in time and, on some formats, in memory.
+    ///
+    /// See the note on [`Level`] before reaching for this.
     pub const BEST: Self = Self(9);
 
     /// The weakest level, the same as [`Level::NONE`].
