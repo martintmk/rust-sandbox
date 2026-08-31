@@ -106,6 +106,66 @@ macro_rules! format_contract {
             }
 
             #[test]
+            fn finish_and_collect_matches_driving_the_codec_by_hand() {
+                // The convenience must be exactly the manual loop, not an approximation of it.
+                let memory = GlobalPool::new();
+                let data = payload();
+
+                let mut encoder = $module::Encoder::new(memory.clone());
+                encoder.push(view(&data)).expect("push succeeds");
+                let convenient = encoder.finish_and_collect().expect("compression succeeds");
+
+                let mut by_hand = $module::Encoder::new(memory.clone());
+                by_hand.push(view(&data)).expect("push succeeds");
+                Encoder::finish(&mut by_hand);
+                let mut collected = BytesBuf::new();
+                while let Some(chunk) = Encoder::pull(&mut by_hand).expect("pull succeeds").into_data() {
+                    collected.put_bytes(chunk);
+                }
+
+                assert_eq!(convenient.to_vec(), collected.consume_all().to_vec());
+
+                let mut decoder = $module::Decoder::new(memory);
+                decoder.push(convenient).expect("push succeeds");
+
+                assert_eq!(decoder.finish_and_collect().expect("decompression succeeds").to_vec(), data);
+            }
+
+            #[test]
+            fn finish_and_collect_tolerates_an_explicit_finish() {
+                // Finishing is idempotent, so the convenience must not care whether the caller
+                // already finished the stream.
+                let memory = GlobalPool::new();
+                let data = payload();
+
+                let mut encoder = $module::Encoder::new(memory.clone());
+                encoder.push(view(&data)).expect("push succeeds");
+                Encoder::finish(&mut encoder);
+
+                let encoded = encoder.finish_and_collect().expect("compression succeeds");
+                let plain = $module::decompress(encoded, memory).expect("decompression succeeds");
+
+                assert_eq!(plain.to_vec(), data);
+            }
+
+            #[test]
+            fn finish_and_collect_works_through_a_trait_object() {
+                // The method is provided rather than required, so it must survive being reached
+                // through `Box<dyn Encoder>`.
+                let memory = GlobalPool::new();
+                let data = payload();
+
+                let mut encoder: Box<dyn Encoder> = Box::new($module::Encoder::new(memory.clone()));
+                encoder.push(view(&data)).expect("push succeeds");
+                let encoded = encoder.finish_and_collect().expect("compression succeeds");
+
+                let mut decoder: Box<dyn Decoder> = Box::new($module::Decoder::new(memory));
+                decoder.push(encoded).expect("push succeeds");
+
+                assert_eq!(decoder.finish_and_collect().expect("decompression succeeds").to_vec(), data);
+            }
+
+            #[test]
             fn round_trips_empty_input() {
                 let memory = GlobalPool::new();
 

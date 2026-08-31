@@ -43,8 +43,8 @@ pub(crate) struct EngineKey {
 /// into each request:
 ///
 /// ```
+/// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;
-/// use bytesbuf::{BytesBuf, BytesView};
 /// use compressed::{Level, Pool, gzip};
 ///
 /// #[derive(Clone)]
@@ -61,13 +61,7 @@ pub(crate) struct EngineKey {
 ///             .build(self.memory.clone());
 ///
 ///         encoder.push(body)?;
-///         encoder.finish();
-///
-///         let mut collected = BytesBuf::new();
-///         while let Some(chunk) = encoder.pull()?.into_data() {
-///             collected.put_bytes(chunk);
-///         }
-///         Ok(collected.consume_all())
+///         Ok(encoder.finish_and_collect()?)
 ///         // Dropping `encoder` returns its engine to the pool for the next request.
 ///     }
 /// }

@@ -41,6 +41,9 @@ macro_rules! define_format {
 
         use bytesbuf::BytesView;
         use bytesbuf::mem::MemoryShared;
+        // Anonymous, because this module defines its own `Encoder` and `Decoder` types; the
+        // imports exist only to bring the traits' provided methods into scope.
+        use $crate::codec::{Decoder as _, Encoder as _};
         use $crate::engine::{DEFAULT_CHUNK_SIZE, Pump};
         use $crate::error::Result;
         use $crate::level::Level;
@@ -335,9 +338,7 @@ macro_rules! define_format {
         pub fn compress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
             let mut encoder = Encoder::new(memory);
             encoder.push(input)?;
-            encoder.finish();
-
-            $crate::format::drain(|| encoder.pull())
+            encoder.finish_and_collect()
         }
 
         #[doc = concat!("Decompresses a complete ", $name, " stream that is already in memory.")]
@@ -351,9 +352,7 @@ macro_rules! define_format {
         pub fn decompress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
             let mut decoder = Decoder::new(memory);
             decoder.push(input)?;
-            decoder.finish();
-
-            $crate::format::drain(|| decoder.pull())
+            decoder.finish_and_collect()
         }
     };
 }

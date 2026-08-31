@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use bytesbuf::BytesView;
+use bytesbuf::{BytesBuf, BytesView};
 
 use crate::error::Result;
 use crate::output::Output;
@@ -50,23 +50,14 @@ mod sealed {
 /// `Box<dyn Encoder>` can be shared as well as moved between threads.
 ///
 /// ```
+/// use bytesbuf::BytesView;
 /// use bytesbuf::mem::{GlobalPool, MemoryShared};
-/// use bytesbuf::{BytesBuf, BytesView};
 /// use compressed::{Encoder, Output, gzip};
 ///
 /// /// Compresses a payload with whichever encoder it is handed.
 /// fn encode(mut encoder: impl Encoder, input: BytesView) -> compressed::Result<BytesView> {
 ///     encoder.push(input)?;
-///     encoder.finish();
-///
-///     // Appending a view to a `BytesBuf` is zero-copy, so this collects the chunks without
-///     // an intermediate allocation.
-///     let mut collected = BytesBuf::new();
-///     while let Some(chunk) = encoder.pull()?.into_data() {
-///         collected.put_bytes(chunk);
-///     }
-///
-///     Ok(collected.consume_all())
+///     encoder.finish_and_collect()
 /// }
 ///
 /// let memory = GlobalPool::new();
@@ -95,6 +86,33 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
     ///
     /// Returns an error if the underlying compression engine fails.
     fn pull(&mut self) -> Result<Output>;
+
+    /// Finishes the stream and collects everything still to be produced.
+    ///
+    /// This calls [`finish`][Encoder::finish] itself and then drains
+    /// [`pull`][Encoder::pull], so it cannot be misused into returning a partial result the way a
+    /// bare drain loop can: before finishing, `pull` reports that it needs more input, which is
+    /// indistinguishable from the end of the stream once the chunk has been unwrapped. Finishing
+    /// twice is harmless, so calling this after [`finish`][Encoder::finish] is fine.
+    ///
+    /// This buffers the whole remaining output, so peak memory follows the size of the result.
+    /// Drive [`pull`][Encoder::pull] directly to keep it bounded by the chunk size instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying compression engine fails.
+    fn finish_and_collect(&mut self) -> Result<BytesView> {
+        self.finish();
+
+        // Appending a view to a `BytesBuf` is zero-copy, so the chunks are joined without an
+        // intermediate allocation.
+        let mut collected = BytesBuf::new();
+        while let Some(chunk) = self.pull()?.into_data() {
+            collected.put_bytes(chunk);
+        }
+
+        Ok(collected.consume_all())
+    }
 }
 
 /// A streaming decompressor.
@@ -124,6 +142,35 @@ pub trait Decoder: sealed::Sealed + fmt::Debug + Send + Sync {
     ///
     /// Returns an error if the data is invalid, truncated, or exceeds the configured limits.
     fn pull(&mut self) -> Result<Output>;
+
+    /// Finishes the stream and collects everything still to be produced.
+    ///
+    /// This calls [`finish`][Decoder::finish] itself and then drains [`pull`][Decoder::pull], so
+    /// it cannot be misused into returning a partial result the way a bare drain loop can: before
+    /// finishing, `pull` reports that it needs more input, which is indistinguishable from the end
+    /// of the stream once the chunk has been unwrapped. That distinction matters more here than
+    /// for an encoder, because a silently short decode looks like valid data. Finishing twice is
+    /// harmless, so calling this after [`finish`][Decoder::finish] is fine.
+    ///
+    /// This buffers the whole remaining output, so peak memory follows the size of the result.
+    /// Drive [`pull`][Decoder::pull] directly to keep it bounded by the chunk size instead, which
+    /// also keeps the configured limits meaningful against a hostile stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data is invalid, truncated, or exceeds the configured limits.
+    fn finish_and_collect(&mut self) -> Result<BytesView> {
+        self.finish();
+
+        // Appending a view to a `BytesBuf` is zero-copy, so the chunks are joined without an
+        // intermediate allocation.
+        let mut collected = BytesBuf::new();
+        while let Some(chunk) = self.pull()?.into_data() {
+            collected.put_bytes(chunk);
+        }
+
+        Ok(collected.consume_all())
+    }
 }
 
 /// Forwards the trait methods to a format module's inherent methods.
@@ -205,7 +252,6 @@ impl Decoder for Box<dyn Decoder> {
 
 #[cfg(all(test, feature = "gzip"))]
 mod tests {
-    use bytesbuf::BytesBuf;
     use bytesbuf::mem::GlobalPool;
 
     use super::*;

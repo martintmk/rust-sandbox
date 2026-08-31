@@ -20,10 +20,10 @@ use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use alloc_tracker::{Allocator, Operation, Session};
+use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
-use bytesbuf::{BytesBuf, BytesView};
 use compressed::brotli::{self, WindowSize};
-use compressed::{Format, Level, Pool};
+use compressed::{Decoder as _, Encoder as _, Format, Level, Pool};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 #[global_allocator]
@@ -101,14 +101,8 @@ fn compress(
 
     let mut encoder = builder.build(memory.clone());
     encoder.push(input.clone()).expect("push succeeds");
-    encoder.finish();
 
-    let mut collected = BytesBuf::new();
-    while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-        collected.put_bytes(data);
-    }
-
-    collected.consume_all()
+    encoder.finish_and_collect().expect("compression succeeds")
 }
 
 fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &GlobalPool) -> BytesView {
@@ -120,28 +114,16 @@ fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &G
 
     let mut decoder = builder.build(memory.clone());
     decoder.push(input.clone()).expect("push succeeds");
-    decoder.finish();
 
-    let mut collected = BytesBuf::new();
-    while let Some(data) = decoder.pull().expect("pull succeeds").into_data() {
-        collected.put_bytes(data);
-    }
-
-    collected.consume_all()
+    decoder.finish_and_collect().expect("decompression succeeds")
 }
 
 /// Compresses with an explicit brotli window, which the runtime `Format` builder cannot express.
 fn encode_brotli(window: WindowSize, input: &BytesView, memory: &GlobalPool) -> BytesView {
     let mut encoder = brotli::Encoder::builder().window_size(window).build(memory.clone());
     encoder.push(input.clone()).expect("push succeeds");
-    encoder.finish();
 
-    let mut collected = BytesBuf::new();
-    while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-        collected.put_bytes(data);
-    }
-
-    collected.consume_all()
+    encoder.finish_and_collect().expect("compression succeeds")
 }
 
 /// Runs `body` under Criterion while attributing its allocations to `operation`.
