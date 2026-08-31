@@ -29,19 +29,15 @@ pub(crate) struct EngineKey {
 
 /// A shared, cloneable pool of reusable compression engine state.
 ///
-/// Building a compressor is not free: constructing a gzip compressor costs about **6.9 µs**, which
-/// is comparable to the ~11.2 µs it takes to compress a 10 KiB body. A service that builds a fresh
-/// encoder per request therefore spends much of its compression budget on setup. Measured end to
-/// end, per request:
+/// Building a compressor allocates and initialises a substantial amount of state, and on a small
+/// message that setup can cost as much as the compression itself. A service that builds a fresh
+/// encoder per message therefore spends much of its compression budget getting ready to compress.
+/// Recycling engines removes that cost.
 ///
-/// | Body | Fresh engine | Pooled engine | Saved |
-/// |---|---|---|---|
-/// | 1 KiB | 11.8 µs | 6.0 µs | **~50%** |
-/// | 10 KiB | 8.4 µs | 6.2 µs | **~26%** |
-///
-/// The saving is a roughly fixed ~6 µs per encoder, so it matters most for small messages and
-/// fades into the noise for large ones — which is the shape of ordinary request and response
-/// traffic, where most bodies are small.
+/// The saving is roughly fixed per encoder, so it matters most for small messages and fades as
+/// bodies grow — which suits ordinary request and response traffic, where most bodies are small.
+/// Measure your own workload before and after: [`Pool::with_capacity`] accepts a capacity of zero,
+/// which disables recycling and gives you the baseline to compare against.
 ///
 /// Clone is cheap and every clone shares one pool, so a client holds a single pool and clones it
 /// into each request:
@@ -96,12 +92,12 @@ pub(crate) struct EngineKey {
 /// [`deflate`][crate::deflate], [`zlib`][crate::zlib] and [`gzip`][crate::gzip]**. Measured, the
 /// engines it does not pool are not worth pooling:
 ///
-/// | Engine | Construction | Reusable? |
-/// |---|---|---|
-/// | deflate-family compressor | 6.9 µs | yes — `reset` preserves container and level |
-/// | deflate-family decompressor | 0.4 µs | not worth it, and a reset cannot restore gzip framing |
-/// | brotli encoder | 0.2 µs | no reset exists upstream |
-/// | brotli decoder | 0.2 µs | no reset exists upstream |
+/// | Engine | Reused? |
+/// |---|---|
+/// | deflate-family compressor | yes — expensive to build, and `reset` preserves its container and level |
+/// | deflate-family decompressor | no — cheap to build, and a reset cannot restore gzip framing |
+/// | brotli encoder | no — cheap to build, and no reset exists upstream |
+/// | brotli decoder | no — cheap to build, and no reset exists upstream |
 ///
 /// Because this is an implementation detail rather than a contract, more engines can start being
 /// pooled without any change to calling code.

@@ -95,11 +95,10 @@ assert_eq!(
 
 ### Reusing engine state
 
-Building a compressor costs about 6.9 µs, comparable to compressing a 10 KiB body. A service
-that encodes many messages should hold one [`Pool`][__link12], clone it into each encoder, and let the
-engine return to the pool when the encoder drops. That saves a roughly fixed ~6 µs per message:
-about 50% of the cost of a 1 KiB body, ~26% of a 10 KiB one, and progressively less as bodies
-grow.
+Building a compressor allocates and initialises a substantial amount of state — on a small
+message, as much work as the compression itself. A service that encodes many messages should
+hold one [`Pool`][__link12], clone it into each encoder, and let the engine return to the pool when the
+encoder drops. The saving is roughly fixed per message, so it matters most for small bodies.
 
 ```rust
 use bytesbuf::mem::GlobalPool;
@@ -150,7 +149,7 @@ process.
 Both are off by default, so the base build pulls in nothing beyond `bytesbuf` and `flate2`.
 
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbx-Bw8OoU3NUbf9ME17sNWVYb9lhTfLk6KEwbRCM-_fb2FZphZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbvIzNqjnIlvIbrsJDhS0yybEbIrrFWZM_QS0bXl7uUU3HKWRhZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/compressed/0.1.0/compressed/deflate/index.html
  [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=Decoder

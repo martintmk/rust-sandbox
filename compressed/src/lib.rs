@@ -101,11 +101,10 @@
 //!
 //! ## Reusing engine state
 //!
-//! Building a compressor costs about 6.9 µs, comparable to compressing a 10 KiB body. A service
-//! that encodes many messages should hold one [`Pool`], clone it into each encoder, and let the
-//! engine return to the pool when the encoder drops. That saves a roughly fixed ~6 µs per message:
-//! about 50% of the cost of a 1 KiB body, ~26% of a 10 KiB one, and progressively less as bodies
-//! grow.
+//! Building a compressor allocates and initialises a substantial amount of state — on a small
+//! message, as much work as the compression itself. A service that encodes many messages should
+//! hold one [`Pool`], clone it into each encoder, and let the engine return to the pool when the
+//! encoder drops. The saving is roughly fixed per message, so it matters most for small bodies.
 //!
 //! ```
 //! use bytesbuf::mem::GlobalPool;
