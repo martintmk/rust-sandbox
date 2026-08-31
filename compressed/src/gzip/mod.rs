@@ -5,6 +5,8 @@
 //! This is the format behind HTTP `Content-Encoding: gzip` and the `.gz` file extension.
 //! Concatenated members decode as one logical stream by default, matching `gzip(1)`.
 //!
+//! # Examples
+//!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;

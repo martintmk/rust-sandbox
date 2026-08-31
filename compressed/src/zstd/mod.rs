@@ -8,6 +8,8 @@
 //! Unlike this crate's other formats, zstd is provided by a C library compiled from bundled
 //! sources, so enabling it requires a C compiler. Builds that leave the feature off stay pure Rust.
 //!
+//! # Examples
+//!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;
@@ -125,6 +127,8 @@ pub(crate) struct EncoderOptions {
 }
 
 /// Settings that only zstd has.
+///
+/// # Examples
 ///
 /// ```
 /// use bytesbuf::mem::GlobalPool;

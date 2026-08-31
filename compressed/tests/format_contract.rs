@@ -12,7 +12,8 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 use bytesbuf::mem::GlobalPool;
 use bytesbuf::{BytesBuf, BytesView};
-use compressed::{Decoder, DecompressionLimits, Encoder, Format, Level, Output, Pool};
+use compressed::format::Format;
+use compressed::{Decoder, DecompressionLimits, Encoder, Level, Output, Pool};
 
 fn view(bytes: &[u8]) -> BytesView {
     BytesView::copied_from_slice(bytes, &GlobalPool::new())

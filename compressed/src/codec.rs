@@ -40,14 +40,15 @@ mod sealed {
 /// A streaming compressor.
 ///
 /// This is the contract every format's encoder satisfies, so callers can be generic over the
-/// format: [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] and, with the
-/// `brotli` feature, [`brotli`][crate::brotli]. A `Box<dyn Encoder>` is itself an `Encoder`, so a
-/// format chosen at runtime with [`Format::encoder`][crate::Format::encoder] fits anywhere a
+/// format, whichever of them a build enables. A `Box<dyn Encoder>` is itself an `Encoder`, so a
+/// format chosen at runtime with [`Format::encoder`][crate::format::Format::encoder] fits anywhere a
 /// concrete encoder does.
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they
 /// need, without breaking downstream code. Every implementation is `Send + Sync`, so a
 /// `Box<dyn Encoder>` can be shared as well as moved between threads.
+///
+/// # Examples
 ///
 /// ```
 /// use bytesbuf::BytesView;
@@ -104,6 +105,14 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// runtime one. `Self: Sized` keeps the trait object safe, and a `Box<dyn Encoder>` is itself
     /// sized, so a runtime-selected encoder can still be consumed this way.
     ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying compression engine fails.
+    ///
+    /// # Examples
+    ///
+    /// An encoder is spent once it has encoded, so a second call does not compile:
+    ///
     /// ```compile_fail
     /// use bytesbuf::BytesView;
     /// use bytesbuf::mem::GlobalPool;
@@ -114,14 +123,9 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
     /// let encoder = gzip::Encoder::new(memory);
     ///
     /// encoder.encode(input.clone())?;
-    /// // The encoder was consumed by the call above, so this does not compile.
     /// encoder.encode(input)?;
     /// # Ok::<(), compressed::Error>(())
     /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying compression engine fails.
     fn encode(mut self, input: BytesView) -> Result<BytesView>
     where
         Self: Sized,
@@ -143,9 +147,8 @@ pub trait Encoder: sealed::Sealed + fmt::Debug + Send + Sync {
 /// A streaming decompressor.
 ///
 /// This is the contract every format's decoder satisfies, so callers can be generic over the
-/// format: [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] and, with the
-/// `brotli` feature, [`brotli`][crate::brotli]. A `Box<dyn Decoder>` is itself a `Decoder`, so a
-/// format chosen at runtime with [`Format::decoder`][crate::Format::decoder] fits anywhere a
+/// format, whichever of them a build enables. A `Box<dyn Decoder>` is itself a `Decoder`, so a
+/// format chosen at runtime with [`Format::decoder`][crate::format::Format::decoder] fits anywhere a
 /// concrete decoder does.
 ///
 /// The trait is sealed: further formats can be added, and the trait can gain the methods they

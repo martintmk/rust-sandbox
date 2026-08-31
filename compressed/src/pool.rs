@@ -42,6 +42,8 @@ pub(crate) struct EngineKey {
 /// Clone is cheap and every clone shares one pool, so a client holds a single pool and clones it
 /// into each request:
 ///
+/// # Examples
+///
 /// ```
 /// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;
@@ -81,16 +83,16 @@ pub(crate) struct EngineKey {
 ///
 /// The pool is transparent: it recycles the engines that are worth recycling and silently builds
 /// the rest, so calling code never has to know which is which. Today that means **compressors for
-/// [`deflate`][crate::deflate], [`zlib`][crate::zlib] and [`gzip`][crate::gzip]**. Measured, the
+/// `deflate`, `zlib` and `gzip`**. Measured, the
 /// engines it does not pool are not worth pooling:
 ///
 /// | Engine | Reused? |
 /// |---|---|
-/// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] / [`gzip`][crate::gzip] compressor | yes — `reset` preserves its container and level |
-/// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] decompressor | yes — `reset` restores the framing |
-/// | [`gzip`][crate::gzip] decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
-/// | [`zstd`][crate::zstd] compressor and decompressor | yes — `reset` keeps the context's allocations, which is where most of the cost is |
-/// | [`brotli`][crate::brotli] encoder and decoder | no — upstream exposes no reset, and recycling its buffers through a custom allocator was measured and did not pay for itself |
+/// | `deflate` / `zlib` / `gzip` compressor | yes — `reset` preserves its container and level |
+/// | `deflate` / `zlib` decompressor | yes — `reset` restores the framing |
+/// | `gzip` decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
+/// | `zstd` compressor and decompressor | yes — `reset` keeps the context's allocations, which is where most of the cost is |
+/// | `brotli` encoder and decoder | no — upstream exposes no reset, and recycling its buffers through a custom allocator was measured and did not pay for itself |
 ///
 /// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
 /// the fixed setup cost is a comparable share of the work either way.

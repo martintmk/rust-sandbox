@@ -2,12 +2,12 @@
 
 //! Choosing a compression format at runtime.
 //!
-//! The format modules ([`gzip`][crate::gzip] and friends) are the right choice when the format is
+//! The format modules (`gzip` and friends) are the right choice when the format is
 //! known at compile time. This module is for when it is not: encoding whatever a client asked for,
 //! or decoding whatever a peer declared it sent.
 //!
-//! [`Format`] is re-exported at the crate root, since it is the entry point; the builders it
-//! returns live here so they do not collide with the per-format builders such as
+//! [`Format`] is the entry point. The builders it returns live here beside it, so they do not
+//! collide with the per-format builders such as
 //! [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder].
 
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
@@ -28,14 +28,17 @@ use crate::pool::Pool;
 
 /// A compression format, selectable at runtime.
 ///
-/// The format modules ([`gzip`][crate::gzip] and friends) are the right choice when the format is
+/// The format modules (`gzip` and friends) are the right choice when the format is
 /// known at compile time. This enum is for when it is not: encoding whatever a client asked for,
 /// or decoding whatever a peer declared it sent.
+///
+/// # Examples
 ///
 /// ```
 /// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;
-/// use compressed::{Format, Level};
+/// use compressed::Level;
+/// use compressed::format::Format;
 ///
 /// // The format arrives as a string, from an HTTP header.
 /// let format = Format::from_content_encoding("gzip").expect("a supported encoding");
@@ -49,19 +52,19 @@ use crate::pool::Pool;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// Raw deflate, RFC 1951. See [`deflate`][crate::deflate]. Requires the `deflate` feature.
+    /// Raw deflate, RFC 1951. See `deflate`. Requires the `deflate` feature.
     #[cfg(feature = "deflate")]
     Deflate,
-    /// Zlib, RFC 1950. See [`zlib`][crate::zlib]. Requires the `zlib` feature.
+    /// Zlib, RFC 1950. See `zlib`. Requires the `zlib` feature.
     #[cfg(feature = "zlib")]
     Zlib,
-    /// Gzip, RFC 1952. See [`gzip`][crate::gzip]. Requires the `gzip` feature.
+    /// Gzip, RFC 1952. See `gzip`. Requires the `gzip` feature.
     #[cfg(feature = "gzip")]
     Gzip,
-    /// Brotli, RFC 7932. See [`brotli`][crate::brotli]. Requires the `brotli` feature.
+    /// Brotli, RFC 7932. See `brotli`. Requires the `brotli` feature.
     #[cfg(feature = "brotli")]
     Brotli,
-    /// Zstandard, RFC 8878. See [`zstd`][crate::zstd]. Requires the `zstd` feature.
+    /// Zstandard, RFC 8878. See `zstd`. Requires the `zstd` feature.
     #[cfg(feature = "zstd")]
     Zstd,
 }
@@ -85,8 +88,8 @@ impl Format {
 
     /// The HTTP `Content-Encoding` token for this format, if it has one.
     ///
-    /// Returns `None` for [`Format::Deflate`]: raw deflate has no HTTP token. Note that HTTP's
-    /// `deflate` token means a *zlib* stream, not raw deflate, so it maps to [`Format::Zlib`].
+    /// Returns `None` for `Format::Deflate`: raw deflate has no HTTP token. Note that HTTP's
+    /// `deflate` token means a *zlib* stream, not raw deflate, so it maps to `Format::Zlib`.
     #[must_use]
     #[cfg_attr(
         not(feature = "deflate"),
@@ -112,7 +115,7 @@ impl Format {
 
     /// Parses a single HTTP `Content-Encoding` token.
     ///
-    /// Matching is case-insensitive, as HTTP requires. `deflate` maps to [`Format::Zlib`], which is
+    /// Matching is case-insensitive, as HTTP requires. `deflate` maps to `Format::Zlib`, which is
     /// what the token actually denotes; `x-gzip` is accepted as a legacy alias for `gzip`. Tokens
     /// for formats this build does not support return `None`.
     ///
@@ -163,8 +166,10 @@ impl Format {
     /// `identity` and `*` are ignored — an empty iterator simply means sending the body
     /// uncompressed, which is always acceptable.
     ///
+    /// # Examples
+    ///
     /// ```
-    /// use compressed::Format;
+    /// use compressed::format::Format;
     ///
     /// // Take the client's first choice.
     /// let best = Format::from_accept_encoding("gzip;q=0.8, deflate;q=0.5").next();
@@ -453,7 +458,7 @@ impl DecoderBuilder {
 
     /// Sets whether consecutive streams decode as one logical stream.
     ///
-    /// Left unset, each format keeps its own default: enabled for [`Format::Gzip`], matching
+    /// Left unset, each format keeps its own default: enabled for `Format::Gzip`, matching
     /// `gzip(1)`, and disabled for the others, where concatenation is not an established
     /// convention.
     #[must_use]

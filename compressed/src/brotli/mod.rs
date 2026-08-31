@@ -8,6 +8,8 @@
 //! Brotli streams carry no magic bytes, so the format has to be known from context, such as a
 //! `Content-Encoding` header.
 //!
+//! # Examples
+//!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;
@@ -157,10 +159,12 @@ pub(crate) struct EncoderOptions {
 ///
 /// The portable settings — [`level`][EncoderBuilder::level] and
 /// [`output_chunk_size`][EncoderBuilder::output_chunk_size] — are shared with every other format
-/// and are also reachable through [`Format::encoder`][crate::Format::encoder]. These are not: a
+/// and are also reachable through [`Format::encoder`][crate::format::Format::encoder]. These are not: a
 /// runtime builder that might produce any format cannot honour a setting only brotli has, so
 /// reach for them through this concrete builder and box the result if you need a
 /// [`Encoder`][crate::Encoder] trait object.
+///
+/// # Examples
 ///
 /// ```
 /// use bytesbuf::mem::GlobalPool;

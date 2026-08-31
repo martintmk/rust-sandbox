@@ -1,12 +1,10 @@
 // Licensed under the MIT License.
 
-//! # compressed
-//!
 //! Streaming compression and decompression over [`bytesbuf`] byte sequences.
 //!
-//! Four formats: [`deflate`], [`zlib`], [`gzip`], and [`brotli`] behind the `brotli` feature.
-//! Each lives in its own module and exposes the same six items, so moving between them is a change
-//! of import rather than a change of code.
+//! Five formats are available, each behind a cargo feature of its own: `deflate`, `zlib`,
+//! `gzip`, `brotli` and `zstd`. Each lives in its own module and exposes the same six items,
+//! so moving between them is a change of import rather than a change of code.
 //!
 //! Compression engines normally speak `std::io::Read` and `std::io::Write`, which assume a single
 //! contiguous `&[u8]`. A [`BytesView`][bytesbuf::BytesView] is a chain of segments with no
@@ -15,7 +13,7 @@
 //! writes into the uninitialized spare capacity of a [`BytesBuf`][bytesbuf::BytesBuf], so no
 //! intermediate copy is needed.
 //!
-//! ## Whole buffers
+//! # Whole buffers
 //!
 //! ```
 //! use bytesbuf::BytesView;
@@ -35,7 +33,7 @@
 //! # Ok::<(), compressed::Error>(())
 //! ```
 //!
-//! ## Streaming
+//! # Streaming
 //!
 //! [`gzip::Encoder`] and [`gzip::Decoder`] are push/pull state machines rather than one-shot
 //! transforms. Each `pull` returns at most one chunk, so processing a multi-gigabyte stream never
@@ -68,17 +66,18 @@
 //! # Ok::<(), compressed::Error>(())
 //! ```
 //!
-//! ## Choosing a format
+//! # Choosing a format
 //!
 //! The [`Encoder`] and [`Decoder`] traits describe the contract independently of the format, so
 //! code can be written once and used with any of them. When the format is only known at runtime —
-//! from a `Content-Encoding` header, say — [`Format`] resolves it and its builders produce a boxed
+//! from a `Content-Encoding` header, say — [`format::Format`] resolves it and its builders produce a boxed
 //! codec, which is itself an `Encoder` or `Decoder` and so fits anywhere a concrete one does:
 //!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;
-//! use compressed::{Format, Level};
+//! use compressed::Level;
+//! use compressed::format::Format;
 //!
 //! // Pick the encoding the client ranked highest among those this build supports.
 //! let format = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8, deflate;q=0.5")
@@ -98,7 +97,7 @@
 //! # Ok::<(), compressed::Error>(())
 //! ```
 //!
-//! ## Reusing engine state
+//! # Reusing engine state
 //!
 //! Building a compressor allocates and initialises a substantial amount of state — on a small
 //! message, as much work as the compression itself. A service that encodes many messages should
@@ -120,7 +119,7 @@
 //! The pool is transparent — it recycles what is worth recycling and builds the rest — so calling
 //! code never has to know which engines benefit. See [`Pool`] for what is pooled today.
 //!
-//! ## Security
+//! # Security
 //!
 //! Every one of these formats can expand its input by orders of magnitude, so a decoder pointed at
 //! untrusted data is a memory-exhaustion vector.
@@ -128,7 +127,7 @@
 //! The codecs themselves never accumulate: each `pull` hands back one bounded chunk, so nothing in
 //! this crate grows with the length of the stream. The exposure belongs to whatever the caller does
 //! with those chunks, which is why the limits matter most for the accumulating conveniences —
-//! `compress`, `decompress`, and [`Format::compress`] / [`Format::decompress`].
+//! `compress`, `decompress`, and [`format::Format::compress`] / [`format::Format::decompress`].
 //!
 //! Each format declares its own default bounds, because a single portable ratio cannot serve both
 //! families. Deflate cannot expand by more than about 1032x — a structural property of the format —
@@ -146,13 +145,21 @@
 //! buffer. Use [`DecompressionLimits::UNLIMITED`] only for sources you trust as much as your own
 //! process.
 //!
-//! ## Features
+//! # Features
 //!
-//! * `brotli` — the [`brotli`] module and [`Format::Brotli`], via the pure-Rust `brotli` crate.
-//! * `futures-stream` — `CompressStream` and `DecompressStream`, which present compression and
-//!   decompression as a [`futures_core::Stream`] over any stream of byte sequences.
+//! Every format is a separate feature, so a build compiles only the engines it names:
 //!
-//! Both are off by default, so the base build pulls in nothing beyond `bytesbuf` and `flate2`.
+//! * `gzip` — the `gzip` module and `Format::Gzip`, via `flate2`. The only feature on by
+//!   default, being the encoding most often seen on the wire.
+//! * `deflate` — the `deflate` module and `Format::Deflate`, via `flate2`.
+//! * `zlib` — the `zlib` module and `Format::Zlib`, via `flate2`.
+//! * `brotli` — the `brotli` module and `Format::Brotli`, via the pure-Rust `brotli` crate.
+//! * `zstd` — the `zstd` module and `Format::Zstd`, via `zstd-safe`.
+//! * `futures-stream` — the `stream` module, presenting compression and decompression as a
+//!   `futures_core::Stream` over any stream of byte sequences.
+//!
+//! The deflate-family features share one dependency, so enabling all three costs no more than one.
+//! A build that needs only `brotli` or only `zstd` never compiles `flate2` at all.
 
 #[cfg(feature = "brotli")]
 pub mod brotli;
@@ -178,15 +185,11 @@ pub mod zlib;
 pub mod zstd;
 
 #[cfg(feature = "futures-stream")]
-mod stream;
+pub mod stream;
 
 pub use codec::{Decoder, Encoder};
 pub use error::{Error, Result};
-#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
-pub use format::Format;
 pub use level::Level;
 pub use limits::DecompressionLimits;
 pub use output::Output;
 pub use pool::Pool;
-#[cfg(feature = "futures-stream")]
-pub use stream::{CompressStream, DecompressStream};

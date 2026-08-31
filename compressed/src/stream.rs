@@ -1,5 +1,15 @@
 // Licensed under the MIT License.
 
+//! Compression and decompression as [`futures_core::Stream`] adapters.
+//!
+//! [`Compress`] and [`Decompress`] wrap any stream of byte sequences and yield the converted
+//! chunks as they become available, so a body of any size passes through in bounded memory.
+//! Requires the `futures-stream` cargo feature.
+//!
+//! Both are generic only over the source stream. The codec is erased internally, so a format
+//! chosen at run time needs no extra type parameter, and the source's error type is folded into
+//! [`Error`] and retrievable through [`std::error::Error::source`].
+
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -17,7 +27,7 @@ use crate::output::Output;
 /// The push/pull surface both directions share, so the adapters need only one driver.
 ///
 /// Private, and erased behind a box inside the stream types. That keeps the streams at a single
-/// type parameter — `CompressStream<S>` rather than `CompressStream<S, E>` — so callers never have
+/// type parameter — `Compress<S>` rather than `Compress<S, E>` — so callers never have
 /// to name the codec type, while `Encoder` and `Decoder` still keep the two directions from being
 /// mixed up at the constructor.
 trait PushPull: fmt::Debug + Send {
@@ -115,14 +125,16 @@ pin_project! {
     /// Compresses a stream of [`BytesView`] values into a stream of compressed chunks.
     ///
     /// Construct it for a specific format with a named constructor such as
-    /// [`CompressStream::gzip`], or hand it a pre-configured encoder with [`CompressStream::new`].
+    /// [`Compress::gzip`], or hand it a pre-configured encoder with [`Compress::new`].
     ///
     /// The stream ends after its first error rather than reporting the same failure repeatedly.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use bytesbuf::BytesView;
     /// use bytesbuf::mem::GlobalPool;
-    /// use compressed::CompressStream;
+    /// use compressed::stream::Compress;
     /// use futures::StreamExt;
     /// use futures::stream;
     ///
@@ -133,14 +145,14 @@ pin_project! {
     ///     Ok(BytesView::copied_from_slice(b"second", &memory)),
     /// ]);
     ///
-    /// let chunks: Vec<_> = CompressStream::gzip(source, memory).collect().await;
+    /// let chunks: Vec<_> = Compress::gzip(source, memory).collect().await;
     /// let gzip = BytesView::from_views(chunks.into_iter().map(|c| c.unwrap()));
     ///
     /// assert_eq!(gzip.range(0..2).to_vec(), vec![0x1f, 0x8b]);
     /// # });
     /// ```
     #[derive(Debug)]
-    pub struct CompressStream<S> {
+    pub struct Compress<S> {
         #[pin]
         source: S,
         encoder: Box<dyn PushPull>,
@@ -148,12 +160,12 @@ pin_project! {
     }
 }
 
-impl<S> CompressStream<S> {
+impl<S> Compress<S> {
     /// Compresses `source` as gzip at [`Level::DEFAULT`][crate::Level::DEFAULT].
     ///
     /// To choose a compression level or output chunk size, build an encoder with its `builder` and
-    /// pass it to [`CompressStream::new`]. For a format chosen at runtime, pass
-    /// [`Format::encoder`][crate::Format::encoder].
+    /// pass it to [`Compress::new`]. For a format chosen at runtime, pass
+    /// [`Format::encoder`][crate::format::Format::encoder].
     #[cfg(feature = "gzip")]
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
@@ -199,7 +211,7 @@ impl<S> CompressStream<S> {
     }
 }
 
-impl<S, E> Stream for CompressStream<S>
+impl<S, E> Stream for Compress<S>
 where
     S: Stream<Item = std::result::Result<BytesView, E>>,
     E: std::error::Error + Send + Sync + 'static,
@@ -216,22 +228,25 @@ pin_project! {
     /// Decompresses a stream of compressed chunks into a stream of plaintext [`BytesView`] values.
     ///
     /// Construct it for a specific format with a named constructor such as
-    /// [`DecompressStream::gzip`], or hand it a pre-configured decoder with
-    /// [`DecompressStream::new`].
+    /// [`Decompress::gzip`], or hand it a pre-configured decoder with
+    /// [`Decompress::new`].
     ///
     /// The stream ends after its first error rather than reporting the same failure repeatedly.
     ///
     /// # Security
     ///
-    /// [`DecompressStream::gzip`] applies
+    /// [`Decompress::gzip`] applies
     /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()]. Build a decoder with
-    /// [`gzip::Decoder::builder`][crate::gzip::Decoder::builder] and pass it to [`DecompressStream::new`] to tighten the limits for
+    /// [`gzip::Decoder::builder`][crate::gzip::Decoder::builder] and pass it to [`Decompress::new`] to tighten the limits for
     /// untrusted sources.
+    ///
+    /// # Examples
     ///
     /// ```
     /// use bytesbuf::BytesView;
     /// use bytesbuf::mem::GlobalPool;
-    /// use compressed::{DecompressStream, gzip};
+    /// use compressed::gzip;
+    /// use compressed::stream::Decompress;
     /// use futures::StreamExt;
     /// use futures::stream;
     ///
@@ -249,14 +264,14 @@ pin_project! {
     ///         .collect::<Vec<_>>(),
     /// );
     ///
-    /// let chunks: Vec<_> = DecompressStream::gzip(source, memory).collect().await;
+    /// let chunks: Vec<_> = Decompress::gzip(source, memory).collect().await;
     /// let plain = BytesView::from_views(chunks.into_iter().map(|c| c.unwrap()));
     ///
     /// assert_eq!(plain.to_vec(), b"payload".to_vec());
     /// # });
     /// ```
     #[derive(Debug)]
-    pub struct DecompressStream<S> {
+    pub struct Decompress<S> {
         #[pin]
         source: S,
         decoder: Box<dyn PushPull>,
@@ -264,12 +279,12 @@ pin_project! {
     }
 }
 
-impl<S> DecompressStream<S> {
+impl<S> Decompress<S> {
     /// Decompresses a gzip `source` with
     /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()].
     ///
-    /// For a format chosen at runtime, pass [`Format::decoder`][crate::Format::decoder] to
-    /// [`DecompressStream::new`].
+    /// For a format chosen at runtime, pass [`Format::decoder`][crate::format::Format::decoder] to
+    /// [`Decompress::new`].
     #[cfg(feature = "gzip")]
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
@@ -319,7 +334,7 @@ impl<S> DecompressStream<S> {
     }
 }
 
-impl<S, E> Stream for DecompressStream<S>
+impl<S, E> Stream for Decompress<S>
 where
     S: Stream<Item = std::result::Result<BytesView, E>>,
     E: std::error::Error + Send + Sync + 'static,
@@ -367,16 +382,16 @@ mod tests {
         let payload = b"streaming round trip ".repeat(500);
 
         let source = ok_stream(payload.chunks(97).map(view).collect());
-        let gzip = collect(CompressStream::gzip(source, memory.clone())).expect("compression succeeds");
+        let gzip = collect(Compress::gzip(source, memory.clone())).expect("compression succeeds");
 
-        let plain = collect(DecompressStream::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
+        let plain = collect(Decompress::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), payload);
     }
 
     /// Every format must offer both halves of the pair.
     ///
-    /// A format that gains a `CompressStream` constructor but not the matching `DecompressStream`
+    /// A format that gains a `Compress` constructor but not the matching `Decompress`
     /// one leaves callers able to write a stream they cannot read back, and the gap is invisible
     /// until someone reaches for it. This drives each pair end to end so the omission cannot
     /// survive a build.
@@ -388,8 +403,8 @@ mod tests {
         macro_rules! assert_pair {
             ($constructor:ident) => {{
                 let memory = GlobalPool::new();
-                let encoded = collect(CompressStream::$constructor(chunks(), memory.clone())).expect("compression succeeds");
-                let plain = collect(DecompressStream::$constructor(ok_stream(vec![encoded]), memory)).expect("decompression succeeds");
+                let encoded = collect(Compress::$constructor(chunks(), memory.clone())).expect("compression succeeds");
+                let plain = collect(Decompress::$constructor(ok_stream(vec![encoded]), memory)).expect("decompression succeeds");
 
                 assert_eq!(
                     plain.to_vec(),
@@ -414,7 +429,7 @@ mod tests {
     #[test]
     fn compresses_an_empty_source() {
         let source = ok_stream(Vec::new());
-        let gzip = collect(CompressStream::gzip(source, GlobalPool::new())).expect("compression succeeds");
+        let gzip = collect(Compress::gzip(source, GlobalPool::new())).expect("compression succeeds");
 
         assert_eq!(gzip.range(0..2).to_vec(), vec![0x1f, 0x8b]);
     }
@@ -425,7 +440,7 @@ mod tests {
         let encoded = crate::gzip::compress(view(b"one byte at a time"), memory.clone()).expect("compression succeeds");
         let single_bytes = (0..encoded.len()).map(|i| encoded.range(i..=i)).collect();
 
-        let plain = collect(DecompressStream::gzip(ok_stream(single_bytes), memory)).expect("decompression succeeds");
+        let plain = collect(Decompress::gzip(ok_stream(single_bytes), memory)).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), b"one byte at a time".to_vec());
     }
@@ -434,7 +449,7 @@ mod tests {
     fn reports_a_failing_source_as_a_source_error() {
         let failing = stream::iter(vec![Err(std::io::Error::other("transport died"))]);
 
-        let error = collect(CompressStream::gzip(failing, GlobalPool::new())).expect_err("the source failure surfaces");
+        let error = collect(Compress::gzip(failing, GlobalPool::new())).expect_err("the source failure surfaces");
 
         assert!(error.is_source(), "got {error}");
         assert_eq!(
@@ -449,7 +464,7 @@ mod tests {
         // A stream that keeps yielding the same error is unbounded: a caller that collects it
         // accumulates errors until it runs out of memory.
         let source = ok_stream(vec![view(b"this is not gzip")]);
-        let mut stream = Box::pin(DecompressStream::gzip(source, GlobalPool::new()));
+        let mut stream = Box::pin(Decompress::gzip(source, GlobalPool::new()));
 
         block_on(async {
             let first = stream.next().await.expect("an error is reported");
@@ -464,7 +479,7 @@ mod tests {
     fn stays_ended_after_completion() {
         let memory = GlobalPool::new();
         let gzip = crate::gzip::compress(view(b"done"), memory.clone()).expect("compression succeeds");
-        let mut stream = Box::pin(DecompressStream::gzip(ok_stream(vec![gzip]), memory));
+        let mut stream = Box::pin(Decompress::gzip(ok_stream(vec![gzip]), memory));
 
         block_on(async {
             while stream.next().await.is_some() {}
@@ -476,7 +491,7 @@ mod tests {
     fn reports_corrupt_input_from_the_decompress_adapter() {
         let source = ok_stream(vec![view(b"this is not gzip")]);
 
-        let error = collect(DecompressStream::gzip(source, GlobalPool::new())).expect_err("bad data is rejected");
+        let error = collect(Decompress::gzip(source, GlobalPool::new())).expect_err("bad data is rejected");
 
         assert!(error.is_corrupt_data(), "got {error}");
     }
@@ -490,7 +505,7 @@ mod tests {
             .limits(DecompressionLimits::new().with_max_output_len(1024))
             .build(memory);
 
-        let error = collect(DecompressStream::new(ok_stream(vec![gzip]), decoder)).expect_err("the cap fires");
+        let error = collect(Decompress::new(ok_stream(vec![gzip]), decoder)).expect_err("the cap fires");
 
         assert!(error.is_limit_exceeded(), "got {error}");
     }
@@ -501,9 +516,9 @@ mod tests {
         let payload = b"the quick brown fox ".repeat(400);
 
         let encoder = gzip::Encoder::builder().level(Level::BEST).build(memory.clone());
-        let gzip = collect(CompressStream::new(ok_stream(vec![view(&payload)]), encoder)).expect("compression succeeds");
+        let gzip = collect(Compress::new(ok_stream(vec![view(&payload)]), encoder)).expect("compression succeeds");
 
-        let plain = collect(DecompressStream::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
+        let plain = collect(Decompress::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), payload);
     }
@@ -513,8 +528,8 @@ mod tests {
         let memory = GlobalPool::new();
         let source = ok_stream(vec![BytesView::new(), view(b"data"), BytesView::new()]);
 
-        let gzip = collect(CompressStream::gzip(source, memory.clone())).expect("compression succeeds");
-        let plain = collect(DecompressStream::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
+        let gzip = collect(Compress::gzip(source, memory.clone())).expect("compression succeeds");
+        let plain = collect(Decompress::gzip(ok_stream(vec![gzip]), memory)).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), b"data".to_vec());
     }
@@ -533,7 +548,7 @@ mod tests {
             Poll::Pending
         });
 
-        let gzip = collect(CompressStream::gzip(source, GlobalPool::new())).expect("compression succeeds");
+        let gzip = collect(Compress::gzip(source, GlobalPool::new())).expect("compression succeeds");
 
         assert_eq!(gzip.range(0..2).to_vec(), vec![0x1f, 0x8b]);
     }
@@ -545,15 +560,15 @@ mod tests {
         fn assert_send<T: Send>(_: &T) {}
 
         let memory = GlobalPool::new();
-        assert_send(&CompressStream::gzip(ok_stream(Vec::new()), memory.clone()));
-        assert_send(&DecompressStream::gzip(ok_stream(Vec::new()), memory));
+        assert_send(&Compress::gzip(ok_stream(Vec::new()), memory.clone()));
+        assert_send(&Decompress::gzip(ok_stream(Vec::new()), memory));
     }
 
     #[test]
     fn debug_is_available_for_diagnostics() {
         let empty = stream::iter(Vec::<std::result::Result<BytesView, std::io::Error>>::new());
-        let stream = CompressStream::gzip(empty, GlobalPool::new());
+        let stream = Compress::gzip(empty, GlobalPool::new());
 
-        assert!(format!("{stream:?}").contains("CompressStream"));
+        assert!(format!("{stream:?}").contains("Compress"));
     }
 }

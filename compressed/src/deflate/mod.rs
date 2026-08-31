@@ -6,6 +6,8 @@
 //! as inside a ZIP archive or a PNG chunk. Without a checksum, corruption is not reliably detected,
 //! so prefer [`zlib`][crate::zlib] or [`gzip`][crate::gzip] for data in transit.
 //!
+//! # Examples
+//!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;

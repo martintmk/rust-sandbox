@@ -23,6 +23,8 @@ pub(crate) enum Kind {
 /// This is a single canonical error type rather than an enum, so that new failure modes do not
 /// break downstream `match` statements. Classify a failure with the `is_*` accessors:
 ///
+/// # Examples
+///
 /// ```
 /// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;

@@ -5,6 +5,8 @@
 //! This is the format behind HTTP `Content-Encoding: deflate`, which despite its name carries a
 //! zlib stream rather than raw deflate.
 //!
+//! # Examples
+//!
 //! ```
 //! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;

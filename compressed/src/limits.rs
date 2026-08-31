@@ -59,10 +59,11 @@ impl<T> Limit<T> {
 ///
 /// | Format | Default ratio bound | Why |
 /// |---|---|---|
-/// | [`deflate`][crate::deflate], [`zlib`][crate::zlib], [`gzip`][crate::gzip] | 1100x | deflate cannot expand further than about 1032x; that is structural |
-/// | [`brotli`][crate::brotli] | 250 000x | brotli reaches 80 660x on a megabyte of zeros, and 21 028x on a repeated sentence — all legitimate |
+/// | `deflate`, `zlib`, `gzip` | 1100x | deflate cannot expand further than about 1032x; that is structural |
+/// | `brotli` | 250 000x | brotli reaches 80 660x on a megabyte of zeros, and 21 028x on a repeated sentence — all legitimate |
+/// | `zstd` | 250 000x | zstd has no structural ceiling either, so it needs the same loose bound |
 ///
-/// Neither format caps total output size by default, so a multi-gigabyte stream decodes.
+/// No format caps total output size by default, so a multi-gigabyte stream decodes.
 ///
 /// # Security
 ///
@@ -70,6 +71,8 @@ impl<T> Limit<T> {
 /// expansion ceiling it cannot separate a bomb from legitimate highly-compressible data. For
 /// untrusted input set [`with_max_output_len`][Self::with_max_output_len] to whatever the caller
 /// can actually afford to buffer.
+///
+/// # Examples
 ///
 /// ```
 /// use std::num::NonZeroU32;

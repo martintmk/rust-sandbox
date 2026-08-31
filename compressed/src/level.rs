@@ -12,6 +12,8 @@
 /// over the middle of the range stays small. Treat [`Level::BEST`] as a deliberate choice to be
 /// measured on real payloads, not as a free improvement.
 ///
+/// # Examples
+///
 /// ```
 /// use compressed::Level;
 ///

@@ -23,7 +23,8 @@ use alloc_tracker::{Allocator, Operation, Session};
 use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
 use compressed::brotli::{self, WindowSize};
-use compressed::{Decoder as _, Encoder as _, Format, Level, Pool};
+use compressed::format::Format;
+use compressed::{Decoder as _, Encoder as _, Level, Pool};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 #[global_allocator]
