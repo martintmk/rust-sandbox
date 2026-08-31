@@ -114,10 +114,11 @@ macro_rules! define_format {
         }
 
         /// Configures an [`Encoder`].
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Debug, Clone)]
         pub struct EncoderBuilder {
             level: Level,
             chunk_size: NonZeroUsize,
+            pool: Option<$crate::Pool>,
             /// Settings that only this format has. `()` for formats with none.
             ///
             /// The generated builder never reads this beyond handing it to the codec; the format's
@@ -143,12 +144,23 @@ macro_rules! define_format {
                 self
             }
 
+            /// Recycles engine state through a shared [`Pool`][crate::Pool].
+            ///
+            /// Building a compressor is not free, so a service that encodes many messages should
+            /// hand every encoder the same pool. The engine is returned when the encoder is
+            /// dropped. Without a pool each encoder builds its own engine, which is the default.
+            #[must_use]
+            pub fn pool(mut self, pool: $crate::Pool) -> Self {
+                self.pool = Some(pool);
+                self
+            }
+
             /// Builds the encoder, drawing its output buffers from `memory`.
             #[must_use]
             pub fn build(self, memory: impl MemoryShared) -> Encoder {
                 Encoder {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_encoder(self.level, self.options),
+                    codec: $new_encoder(self.level, self.options, self.pool),
                 }
             }
         }
@@ -158,6 +170,7 @@ macro_rules! define_format {
                 Self {
                     level: Level::DEFAULT,
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
+                    pool: None,
                     options: <$enc_options>::default(),
                 }
             }

@@ -11,16 +11,47 @@ use crate::error::{Error, Result};
 use crate::flate::Wrapper;
 use crate::level::Level;
 use crate::limits::FormatLimits;
+use crate::pool::{EngineKey, Pool};
 
 #[derive(Debug)]
 pub(crate) struct FlateCompress {
-    compress: Compress,
+    /// `Some` until the engine is handed back in `drop`.
+    compress: Option<Compress>,
+    recycle: Option<(Pool, EngineKey)>,
 }
 
 impl FlateCompress {
-    pub(crate) fn new(wrapper: Wrapper, level: Level) -> Self {
+    pub(crate) fn new(wrapper: Wrapper, level: Level, pool: Option<Pool>) -> Self {
+        let key = EngineKey {
+            wrapper,
+            level: level.get(),
+        };
+
+        let (compress, recycle) = match pool {
+            Some(pool) => {
+                let engine = pool.take_compressor(key).unwrap_or_else(|| wrapper.compressor(level));
+                (engine, Some((pool, key)))
+            }
+            None => (wrapper.compressor(level), None),
+        };
+
         Self {
-            compress: wrapper.compressor(level),
+            compress: Some(compress),
+            recycle,
+        }
+    }
+
+    fn engine(&mut self) -> &mut Compress {
+        self.compress.as_mut().expect("the engine is only taken in drop")
+    }
+}
+
+impl Drop for FlateCompress {
+    fn drop(&mut self) {
+        if let Some((pool, key)) = self.recycle.take()
+            && let Some(engine) = self.compress.take()
+        {
+            pool.return_compressor(key, engine);
         }
     }
 }
@@ -29,16 +60,16 @@ impl Codec for FlateCompress {
     fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], last_input: bool) -> Result<(Step, usize, usize)> {
         let flush = if last_input { FlushCompress::Finish } else { FlushCompress::None };
 
-        let before_in = self.compress.total_in();
-        let before_out = self.compress.total_out();
+        let compress = self.engine();
+        let before_in = compress.total_in();
+        let before_out = compress.total_out();
 
-        let status = self
-            .compress
+        let status = compress
             .compress_uninit(input, output, flush)
             .map_err(|error| Error::invalid_state("the compression engine reported a failure").with_source(error))?;
 
-        let consumed = usize::try_from(self.compress.total_in() - before_in).unwrap_or(usize::MAX);
-        let produced = usize::try_from(self.compress.total_out() - before_out).unwrap_or(usize::MAX);
+        let consumed = usize::try_from(compress.total_in() - before_in).unwrap_or(usize::MAX);
+        let produced = usize::try_from(compress.total_out() - before_out).unwrap_or(usize::MAX);
 
         let step = if status == Status::StreamEnd {
             Step::StreamEnd
@@ -127,7 +158,7 @@ mod tests {
         let mut headers = Vec::new();
 
         for wrapper in [Wrapper::Raw, Wrapper::Zlib, Wrapper::Gzip] {
-            let mut codec = FlateCompress::new(wrapper, Level::DEFAULT);
+            let mut codec = FlateCompress::new(wrapper, Level::DEFAULT, None);
             let mut out = [MaybeUninit::uninit(); 64];
             let (_, _, produced) = codec.step(b"header check", &mut out, true).expect("compression succeeds");
 

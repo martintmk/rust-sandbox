@@ -45,7 +45,7 @@ define_format! {
     name = "brotli",
     encoder_codec = BrotliCompress,
     encoder_options = EncoderOptions,
-    new_encoder = BrotliCompress::new,
+    new_encoder = |level, options, _pool| BrotliCompress::new(level, options),
     decoder_codec = BrotliDecompress,
     decoder_options = (),
     default_limits = DEFAULT_LIMITS,

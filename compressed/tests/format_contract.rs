@@ -639,3 +639,116 @@ mod format_specific_settings {
         }
     }
 }
+
+/// Engine reuse must be invisible: a recycled encoder has to behave exactly like a fresh one.
+#[cfg(feature = "gzip")]
+mod pooling {
+    use compressed::{Pool, gzip};
+
+    use super::*;
+
+    fn encode_with(pool: Option<Pool>, level: Level, data: &[u8]) -> BytesView {
+        let memory = GlobalPool::new();
+        let builder = gzip::Encoder::builder().level(level);
+        let builder = match pool {
+            Some(pool) => builder.pool(pool),
+            None => builder,
+        };
+
+        let mut encoder = builder.build(memory);
+        encode(&mut encoder, &view(data), usize::MAX).expect("compression succeeds")
+    }
+
+    #[test]
+    fn a_recycled_engine_produces_byte_identical_output() {
+        // The whole safety argument for pooling: reset state must leave no trace of the previous
+        // stream. Compare many pooled rounds against a fresh-engine baseline.
+        let pool = Pool::new();
+        let payloads = [
+            b"first request body".repeat(50),
+            b"a completely different second body, longer".repeat(80),
+            b"third".repeat(500),
+        ];
+
+        for round in 0..4 {
+            for payload in &payloads {
+                let pooled = encode_with(Some(pool.clone()), Level::DEFAULT, payload);
+                let fresh = encode_with(None, Level::DEFAULT, payload);
+
+                assert_eq!(
+                    pooled.to_vec(),
+                    fresh.to_vec(),
+                    "round {round}: pooled output diverged from a fresh engine"
+                );
+                assert_eq!(gzip::decompress(pooled, GlobalPool::new()).expect("decode").to_vec(), *payload);
+            }
+        }
+    }
+
+    #[test]
+    fn an_encoder_abandoned_mid_stream_does_not_poison_the_pool() {
+        // A request cancelled part-way through returns a dirty engine. The next user must still
+        // get a clean stream.
+        let pool = Pool::new();
+
+        {
+            let mut abandoned = gzip::Encoder::builder().pool(pool.clone()).build(GlobalPool::new());
+            abandoned.push(view(&b"half a stream ".repeat(100))).expect("push succeeds");
+            let _ = Encoder::pull(&mut abandoned).expect("pull succeeds");
+            // Dropped without `finish`, so its engine is mid-stream.
+        }
+
+        let recovered = encode_with(Some(pool), Level::DEFAULT, b"a fresh stream");
+        let fresh = encode_with(None, Level::DEFAULT, b"a fresh stream");
+
+        assert_eq!(recovered.to_vec(), fresh.to_vec(), "a recycled dirty engine must be reset");
+        assert_eq!(
+            gzip::decompress(recovered, GlobalPool::new()).expect("decode").to_vec(),
+            b"a fresh stream".to_vec()
+        );
+    }
+
+    #[test]
+    fn levels_do_not_share_engines() {
+        // Reset preserves the level, so a level-9 request must never receive a level-1 engine.
+        let pool = Pool::new();
+        let payload = b"the quick brown fox jumps over the lazy dog ".repeat(200);
+
+        let fast = encode_with(Some(pool.clone()), Level::FAST, &payload);
+        let best = encode_with(Some(pool), Level::BEST, &payload);
+
+        assert_eq!(fast.to_vec(), encode_with(None, Level::FAST, &payload).to_vec());
+        assert_eq!(best.to_vec(), encode_with(None, Level::BEST, &payload).to_vec());
+        assert!(best.len() <= fast.len(), "level 9 must still out-compress level 1");
+    }
+
+    #[test]
+    fn a_pool_is_shared_across_threads() {
+        // The point of the design: one handle lives in a client and is cloned per request.
+        let pool = Pool::new();
+        let payload = b"concurrent body ".repeat(200);
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let pool = pool.clone();
+                let payload = payload.clone();
+                scope.spawn(move || {
+                    for _ in 0..10 {
+                        let encoded = encode_with(Some(pool.clone()), Level::DEFAULT, &payload);
+                        assert_eq!(gzip::decompress(encoded, GlobalPool::new()).expect("decode").to_vec(), payload);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn a_zero_capacity_pool_still_works() {
+        let pool = Pool::with_capacity(0);
+        let payload = b"no recycling here".repeat(20);
+
+        let encoded = encode_with(Some(pool), Level::DEFAULT, &payload);
+
+        assert_eq!(gzip::decompress(encoded, GlobalPool::new()).expect("decode").to_vec(), payload);
+    }
+}

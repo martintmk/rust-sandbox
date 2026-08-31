@@ -32,7 +32,7 @@ define_format! {
     name = "deflate",
     encoder_codec = FlateCompress,
     encoder_options = (),
-    new_encoder = |level, ()| FlateCompress::new(Wrapper::Raw, level),
+    new_encoder = |level, (), pool| FlateCompress::new(Wrapper::Raw, level, pool),
     decoder_codec = FlateDecompress,
     decoder_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,

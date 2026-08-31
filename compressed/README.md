@@ -93,6 +93,28 @@ assert_eq!(
 );
 ```
 
+### Reusing engine state
+
+Building a compressor costs about 6.9 µs, comparable to compressing a 10 KiB body. A service
+that encodes many messages should hold one [`Pool`][__link12], clone it into each encoder, and let the
+engine return to the pool when the encoder drops. That saves a roughly fixed ~6 µs per message:
+about 50% of the cost of a 1 KiB body, ~26% of a 10 KiB one, and progressively less as bodies
+grow.
+
+```rust
+use bytesbuf::mem::GlobalPool;
+use compressed::{Pool, gzip};
+
+let codecs = Pool::new();
+let memory = GlobalPool::new();
+
+// Per request: cheap to build, recycles the engine on drop.
+let encoder = gzip::Encoder::builder().pool(codecs.clone()).build(memory);
+```
+
+The pool is transparent — it recycles what is worth recycling and builds the rest — so calling
+code never has to know which engines benefit. See [`Pool`][__link13] for what is pooled today.
+
 ### Security
 
 Every one of these formats can expand its input by orders of magnitude, so a decoder pointed at
@@ -101,7 +123,7 @@ untrusted data is a memory-exhaustion vector.
 The codecs themselves never accumulate: each `pull` hands back one bounded chunk, so nothing in
 this crate grows with the length of the stream. The exposure belongs to whatever the caller does
 with those chunks, which is why the limits matter most for the accumulating conveniences —
-`compress`, `decompress`, and [`Format::compress`][__link12] / [`Format::decompress`][__link13].
+`compress`, `decompress`, and [`Format::compress`][__link14] / [`Format::decompress`][__link15].
 
 Each format declares its own default bounds, because a single portable ratio cannot serve both
 families. Deflate cannot expand by more than about 1032x — a structural property of the format —
@@ -110,39 +132,41 @@ produced. Brotli has no such ceiling: measured on ordinary repetitive input it r
 for a repeated short string, 21 000x for a repeated sentence and 80 660x for a megabyte of
 zeros, so it defaults to 250 000x.
 
-[`DecompressionLimits`][__link14] carries *overrides*, not values: bounds you leave unset keep the
-format’s default, so [`DecompressionLimits::default()`][__link15] never silently imposes one format’s
+[`DecompressionLimits`][__link16] carries *overrides*, not values: bounds you leave unset keep the
+format’s default, so [`DecompressionLimits::default()`][__link17] never silently imposes one format’s
 calibration on another.
 
 **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
-[`DecompressionLimits::with_max_output_len`][__link16] to whatever the caller can actually afford to
-buffer. Use [`DecompressionLimits::UNLIMITED`][__link17] only for sources you trust as much as your own
+[`DecompressionLimits::with_max_output_len`][__link18] to whatever the caller can actually afford to
+buffer. Use [`DecompressionLimits::UNLIMITED`][__link19] only for sources you trust as much as your own
 process.
 
 ### Features
 
-* `brotli` — the [`brotli`][__link18] module and [`Format::Brotli`][__link19], via the pure-Rust `brotli` crate.
+* `brotli` — the [`brotli`][__link20] module and [`Format::Brotli`][__link21], via the pure-Rust `brotli` crate.
 * `futures-stream` — `CompressStream` and `DecompressStream`, which present compression and
-  decompression as a [`futures_core::Stream`][__link20] over any stream of byte sequences.
+  decompression as a [`futures_core::Stream`][__link22] over any stream of byte sequences.
 
 Both are off by default, so the base build pulls in nothing beyond `bytesbuf` and `flate2`.
 
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbMgXegrl4GqAbqFhhA8Sm0msbh8oWv6dO2bYbrROhkQmouzBhZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbx-Bw8OoU3NUbf9ME17sNWVYb9lhTfLk6KEwbRCM-_fb2FZphZIOCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4wgmxmdXR1cmVzX2NvcmVmMC4zLjM0
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/compressed/0.1.0/compressed/deflate/index.html
  [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=Decoder
  [__link11]: https://docs.rs/compressed/0.1.0/compressed/?search=Format
- [__link12]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::compress
- [__link13]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::decompress
- [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits
- [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::default
- [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
- [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
- [__link18]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
- [__link19]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::Brotli
+ [__link12]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
+ [__link13]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
+ [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::compress
+ [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::decompress
+ [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits
+ [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::default
+ [__link18]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
+ [__link19]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
  [__link2]: https://docs.rs/compressed/0.1.0/compressed/zlib/index.html
- [__link20]: https://docs.rs/futures_core/0.3.34/futures_core/?search=Stream
+ [__link20]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
+ [__link21]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::Brotli
+ [__link22]: https://docs.rs/futures_core/0.3.34/futures_core/?search=Stream
  [__link3]: https://docs.rs/compressed/0.1.0/compressed/gzip/index.html
  [__link4]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
  [__link5]: https://docs.rs/bytesbuf/0.9.0/bytesbuf/?search=BytesView

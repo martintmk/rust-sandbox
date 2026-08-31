@@ -31,7 +31,7 @@ define_format! {
     name = "zlib",
     encoder_codec = FlateCompress,
     encoder_options = (),
-    new_encoder = |level, ()| FlateCompress::new(Wrapper::Zlib, level),
+    new_encoder = |level, (), pool| FlateCompress::new(Wrapper::Zlib, level, pool),
     decoder_codec = FlateDecompress,
     decoder_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,

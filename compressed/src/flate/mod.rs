@@ -27,7 +27,7 @@ pub(crate) const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(1_100), N
 const WINDOW_BITS: u8 = 15;
 
 /// The container framing wrapped around a deflate payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Wrapper {
     /// Raw deflate (RFC 1951): no header and no checksum.
     #[cfg(feature = "deflate")]
