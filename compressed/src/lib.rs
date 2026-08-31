@@ -102,10 +102,24 @@
 //! ## Security
 //!
 //! Every one of these formats can expand its input by orders of magnitude, so a decoder pointed at
-//! untrusted data is a memory-exhaustion vector. All decoders therefore apply
-//! [`DecompressionLimits::DEFAULT`], which rejects expansion beyond 1000x while placing no cap on
-//! total size, so legitimate large streams still decode. Tighten it through the decoder's builder,
-//! or opt out entirely with [`DecompressionLimits::UNLIMITED`] when the source is trusted.
+//! untrusted data is a memory-exhaustion vector.
+//!
+//! The codecs themselves never accumulate: each `pull` hands back one bounded chunk, so nothing in
+//! this crate grows with the length of the stream. The exposure belongs to whatever the caller does
+//! with those chunks, which is why the limits matter most for the accumulating conveniences —
+//! `compress`, `decompress`, and [`Format::compress`] / [`Format::decompress`].
+//!
+//! Each decoder applies its format's own [`DecompressionLimits`], because a single ratio cannot
+//! serve both families. Deflate cannot expand by more than about 1032x — a structural property of
+//! the format — so [`DecompressionLimits::DEFAULT`] sits just above that at 1100x and never
+//! rejects data deflate could legitimately have produced. Brotli has no such ceiling: measured on
+//! ordinary repetitive input it reaches 9 000x for a repeated short string, 21 000x for a repeated
+//! sentence and 80 660x for a megabyte of zeros, so it uses [`DecompressionLimits::BROTLI`].
+//!
+//! **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
+//! [`DecompressionLimits::with_max_output_len`] to whatever the caller can actually afford to
+//! buffer. Use [`DecompressionLimits::UNLIMITED`] only for sources you trust as much as your own
+//! process.
 //!
 //! ## Features
 //!
@@ -117,19 +131,22 @@
 
 #[cfg(feature = "brotli")]
 pub mod brotli;
-#[cfg(feature = "brotli")]
-mod brotli_codec;
 mod codec;
+#[cfg(feature = "deflate")]
 pub mod deflate;
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod engine;
 mod error;
+#[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod flate;
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod format;
-mod format_macro;
+#[cfg(feature = "gzip")]
 pub mod gzip;
 mod level;
 mod limits;
 mod output;
+#[cfg(feature = "zlib")]
 pub mod zlib;
 
 #[cfg(feature = "futures-stream")]
@@ -137,6 +154,7 @@ mod stream;
 
 pub use codec::{Decoder, Encoder};
 pub use error::{Error, Result};
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 pub use format::{DecoderBuilder, EncoderBuilder, Format};
 pub use level::Level;
 pub use limits::DecompressionLimits;

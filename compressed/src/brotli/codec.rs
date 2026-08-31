@@ -12,13 +12,11 @@ use brotli::enc::StandardAlloc;
 use brotli::enc::encode::{BrotliEncoderOperation, BrotliEncoderStateStruct};
 use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc, HuffmanCode};
 
+use crate::brotli::{EncoderOptions, Mode};
 use crate::engine::{Codec, Step};
 use crate::error::{Error, Result};
 use crate::level::Level;
 use crate::limits::DecompressionLimits;
-
-/// The window size exponent. 22 is brotli's default and what decoders expect for interop.
-const WINDOW_BITS: u32 = 22;
 
 /// Brotli's native quality range is `0..=11`, wider than the portable [`Level`] scale of `0..=9`.
 ///
@@ -49,12 +47,24 @@ pub(crate) struct BrotliCompress {
 }
 
 impl BrotliCompress {
-    pub(crate) fn new(level: Level) -> Self {
+    pub(crate) fn new(level: Level, options: EncoderOptions) -> Self {
+        use brotli::enc::encode::BrotliEncoderParameter;
+
         let mut state = BrotliEncoderStateStruct::new(StandardAlloc::default());
-        state.set_parameter(brotli::enc::encode::BrotliEncoderParameter::BROTLI_PARAM_QUALITY, quality(level));
-        state.set_parameter(brotli::enc::encode::BrotliEncoderParameter::BROTLI_PARAM_LGWIN, WINDOW_BITS);
+        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_QUALITY, quality(level));
+        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_LGWIN, u32::from(options.window_size.get()));
+        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_MODE, mode(options.mode));
 
         Self { state, finished: false }
+    }
+}
+
+/// Maps our [`Mode`] onto brotli's numeric parameter.
+fn mode(mode: Mode) -> u32 {
+    match mode {
+        Mode::Generic => 0,
+        Mode::Text => 1,
+        Mode::Font => 2,
     }
 }
 

@@ -10,13 +10,28 @@ use crate::error::{Error, Result};
 /// compressed form can easily be larger than its payload. Without a floor, a legitimate two-byte
 /// member would look like an infinitely bad expansion ratio and be rejected. 32 KiB is far below
 /// any size at which a decompression bomb becomes a memory-exhaustion risk.
+#[cfg_attr(
+    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    expect(dead_code, reason = "only the decoders enforce limits, and no format is enabled")
+)]
 const RATIO_FLOOR_BYTES: u64 = 32 * 1024;
 
-/// The default limit on how far decompression may expand its input.
+/// The ratio limit that suits the deflate family.
 ///
-/// Ordinary text compresses at roughly 20x. Decompression bombs are built to exceed 1000x, so this
-/// separates the two comfortably.
-const DEFAULT_MAX_RATIO: u32 = 1_000;
+/// Deflate cannot expand its input by more than about 1032x — that is a structural property of the
+/// format, not a tuning choice — so a single deflate, zlib or gzip stream is inherently bounded.
+/// Measured worst case for 1 MiB of zeros is 1015x, so this sits just above what the format can
+/// actually produce.
+const DEFLATE_MAX_RATIO: u32 = 1_100;
+
+/// The ratio limit that suits brotli.
+///
+/// Brotli has no comparable structural ceiling: measured on ordinary repetitive input it reaches
+/// 9 000x for a repeated short string, 10 900x for repetitive JSON, 21 000x for a repeated
+/// sentence, and 80 660x for 1 MiB of zeros — all legitimate data. A deflate-shaped limit rejects
+/// every one of them, so brotli needs its own, and even this one is a coarse backstop rather than
+/// real protection.
+const BROTLI_MAX_RATIO: u32 = 250_000;
 
 /// Bounds on how much data decompression may produce.
 ///
@@ -43,11 +58,30 @@ pub struct DecompressionLimits {
 }
 
 impl DecompressionLimits {
-    /// Rejects expansion beyond 1000x, with no limit on total output size.
+    /// The limits for the deflate family: expansion capped at 1100x, no cap on total size.
     ///
-    /// This is what [`Default`] returns, and what the decoders use unless told otherwise.
+    /// This is what [`Default`] returns and what the [`deflate`][crate::deflate],
+    /// [`zlib`][crate::zlib] and [`gzip`][crate::gzip] decoders use unless told otherwise. It sits
+    /// just above deflate's structural ceiling of roughly 1032x, so it never rejects data the
+    /// format could legitimately have produced.
     pub const DEFAULT: Self = Self {
-        max_ratio: Some(DEFAULT_MAX_RATIO),
+        max_ratio: Some(DEFLATE_MAX_RATIO),
+        max_output_len: None,
+    };
+
+    /// The limits for brotli: expansion capped at 250 000x, no cap on total size.
+    ///
+    /// Brotli legitimately reaches tens of thousands of times expansion on repetitive input, so it
+    /// needs a far looser ratio than the deflate family. That makes the ratio a coarse backstop
+    /// rather than real protection.
+    ///
+    /// # Security
+    ///
+    /// For untrusted brotli input, set [`with_max_output_len`][Self::with_max_output_len] to
+    /// whatever your caller can actually afford to buffer. A ratio limit cannot separate a bomb
+    /// from legitimate highly-compressible data in a format with no expansion ceiling.
+    pub const BROTLI: Self = Self {
+        max_ratio: Some(BROTLI_MAX_RATIO),
         max_output_len: None,
     };
 
@@ -81,6 +115,10 @@ impl DecompressionLimits {
     }
 
     /// Fails if the totals so far violate either limit.
+    #[cfg_attr(
+        all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+        expect(dead_code, reason = "only the decoders enforce limits, and no format is enabled")
+    )]
     pub(crate) fn check(self, input_len: u64, output_len: u64) -> Result<()> {
         if let Some(max) = self.max_output_len
             && output_len > max

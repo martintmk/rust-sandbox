@@ -1,5 +1,8 @@
 // Licensed under the MIT License.
 
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+pub(crate) mod macros;
+
 use std::num::NonZeroUsize;
 
 use bytesbuf::BytesView;
@@ -34,11 +37,14 @@ use crate::limits::DecompressionLimits;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
-    /// Raw deflate, RFC 1951. See [`deflate`][crate::deflate].
+    /// Raw deflate, RFC 1951. See [`deflate`][crate::deflate]. Requires the `deflate` feature.
+    #[cfg(feature = "deflate")]
     Deflate,
-    /// Zlib, RFC 1950. See [`zlib`][crate::zlib].
+    /// Zlib, RFC 1950. See [`zlib`][crate::zlib]. Requires the `zlib` feature.
+    #[cfg(feature = "zlib")]
     Zlib,
-    /// Gzip, RFC 1952. See [`gzip`][crate::gzip].
+    /// Gzip, RFC 1952. See [`gzip`][crate::gzip]. Requires the `gzip` feature.
+    #[cfg(feature = "gzip")]
     Gzip,
     /// Brotli, RFC 7932. See [`brotli`][crate::brotli]. Requires the `brotli` feature.
     #[cfg(feature = "brotli")]
@@ -50,8 +56,11 @@ impl Format {
     ///
     /// The contents depend on which cargo features are enabled.
     pub const ALL: &'static [Self] = &[
+        #[cfg(feature = "deflate")]
         Self::Deflate,
+        #[cfg(feature = "zlib")]
         Self::Zlib,
+        #[cfg(feature = "gzip")]
         Self::Gzip,
         #[cfg(feature = "brotli")]
         Self::Brotli,
@@ -62,10 +71,20 @@ impl Format {
     /// Returns `None` for [`Format::Deflate`]: raw deflate has no HTTP token. Note that HTTP's
     /// `deflate` token means a *zlib* stream, not raw deflate, so it maps to [`Format::Zlib`].
     #[must_use]
+    #[cfg_attr(
+        not(feature = "deflate"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "raw deflate is the only format without an HTTP token, and it is not enabled in this configuration"
+        )
+    )]
     pub const fn content_encoding(self) -> Option<&'static str> {
         match self {
+            #[cfg(feature = "deflate")]
             Self::Deflate => None,
+            #[cfg(feature = "zlib")]
             Self::Zlib => Some("deflate"),
+            #[cfg(feature = "gzip")]
             Self::Gzip => Some("gzip"),
             #[cfg(feature = "brotli")]
             Self::Brotli => Some("br"),
@@ -82,10 +101,12 @@ impl Format {
     pub fn from_content_encoding(token: &str) -> Option<Self> {
         let token = token.trim();
 
+        #[cfg(feature = "gzip")]
         if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
             return Some(Self::Gzip);
         }
 
+        #[cfg(feature = "zlib")]
         if token.eq_ignore_ascii_case("deflate") {
             return Some(Self::Zlib);
         }
@@ -94,6 +115,9 @@ impl Format {
         if token.eq_ignore_ascii_case("br") {
             return Some(Self::Brotli);
         }
+
+        #[cfg(not(any(feature = "brotli", feature = "gzip", feature = "zlib")))]
+        let _ = token;
 
         None
     }
@@ -113,7 +137,7 @@ impl Format {
     pub const fn decoder(self) -> DecoderBuilder {
         DecoderBuilder {
             format: self,
-            limits: DecompressionLimits::DEFAULT,
+            limits: None,
             chunk_size: default_chunk_size(),
             concatenated: None,
         }
@@ -211,8 +235,11 @@ impl EncoderBuilder {
         }
 
         match self.format {
+            #[cfg(feature = "deflate")]
             Format::Deflate => build!(deflate),
+            #[cfg(feature = "zlib")]
             Format::Zlib => build!(zlib),
+            #[cfg(feature = "gzip")]
             Format::Gzip => build!(gzip),
             #[cfg(feature = "brotli")]
             Format::Brotli => build!(brotli),
@@ -227,7 +254,7 @@ impl EncoderBuilder {
 #[derive(Debug, Clone, Copy)]
 pub struct DecoderBuilder {
     format: Format,
-    limits: DecompressionLimits,
+    limits: Option<DecompressionLimits>,
     chunk_size: NonZeroUsize,
     concatenated: Option<bool>,
 }
@@ -235,13 +262,17 @@ pub struct DecoderBuilder {
 impl DecoderBuilder {
     /// Sets the bounds on how much data decompression may produce.
     ///
+    /// Left unset, each format keeps its own default: [`DecompressionLimits::DEFAULT`] for the
+    /// deflate family and [`DecompressionLimits::BROTLI`] for brotli, which legitimately expands
+    /// far further.
+    ///
     /// # Security
     ///
-    /// Tighten these beyond [`DecompressionLimits::DEFAULT`] when the data comes from an untrusted
-    /// peer.
+    /// Set [`with_max_output_len`][DecompressionLimits::with_max_output_len] when the data comes
+    /// from an untrusted peer.
     #[must_use]
     pub const fn limits(mut self, limits: DecompressionLimits) -> Self {
-        self.limits = limits;
+        self.limits = Some(limits);
         self
     }
 
@@ -268,9 +299,12 @@ impl DecoderBuilder {
     pub fn build(self, memory: impl MemoryShared) -> Box<dyn Decoder> {
         macro_rules! build {
             ($module:ident) => {{
-                let builder = crate::$module::Decoder::builder()
-                    .limits(self.limits)
-                    .output_chunk_size(self.chunk_size);
+                let builder = crate::$module::Decoder::builder().output_chunk_size(self.chunk_size);
+
+                let builder = match self.limits {
+                    Some(limits) => builder.limits(limits),
+                    None => builder,
+                };
 
                 let builder = match self.concatenated {
                     Some(enabled) => builder.concatenated(enabled),
@@ -282,8 +316,11 @@ impl DecoderBuilder {
         }
 
         match self.format {
+            #[cfg(feature = "deflate")]
             Format::Deflate => build!(deflate),
+            #[cfg(feature = "zlib")]
             Format::Zlib => build!(zlib),
+            #[cfg(feature = "gzip")]
             Format::Gzip => build!(gzip),
             #[cfg(feature = "brotli")]
             Format::Brotli => build!(brotli),
@@ -343,6 +380,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "deflate", feature = "zlib"))]
     #[test]
     fn http_deflate_token_means_zlib() {
         // The most common source of confusion in this area: HTTP's `deflate` token denotes a zlib
@@ -351,6 +389,7 @@ mod tests {
         assert_eq!(Format::Deflate.content_encoding(), None);
     }
 
+    #[cfg(feature = "gzip")]
     #[test]
     fn content_encoding_parsing_is_case_insensitive_and_trims() {
         assert_eq!(Format::from_content_encoding("GZIP"), Some(Format::Gzip));
@@ -371,6 +410,12 @@ mod tests {
     #[test]
     fn brotli_token_is_rejected_when_the_feature_is_off() {
         assert_eq!(Format::from_content_encoding("br"), None);
+    }
+
+    #[cfg(not(feature = "gzip"))]
+    #[test]
+    fn gzip_token_is_rejected_when_the_feature_is_off() {
+        assert_eq!(Format::from_content_encoding("gzip"), None);
     }
 
     #[test]
@@ -410,7 +455,7 @@ mod tests {
 
             let mut decoder = format
                 .decoder()
-                .limits(DecompressionLimits::DEFAULT.with_max_output_len(1024))
+                .limits(DecompressionLimits::UNLIMITED.with_max_output_len(1024))
                 .build(memory);
             decoder.push(encoded).expect("push succeeds");
             decoder.finish();
@@ -427,6 +472,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "gzip")]
     #[test]
     fn the_decoder_builder_keeps_each_formats_concatenation_default() {
         // Gzip decodes concatenated members by default; the others stop at the first stream. The
@@ -454,7 +500,10 @@ mod tests {
 
     #[test]
     fn all_lists_exactly_the_compiled_in_formats() {
-        let expected = if cfg!(feature = "brotli") { 4 } else { 3 };
+        let expected = usize::from(cfg!(feature = "deflate"))
+            + usize::from(cfg!(feature = "zlib"))
+            + usize::from(cfg!(feature = "gzip"))
+            + usize::from(cfg!(feature = "brotli"));
 
         assert_eq!(Format::ALL.len(), expected);
     }

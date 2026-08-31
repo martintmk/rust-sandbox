@@ -22,18 +22,24 @@ allowed_external_types = ["bytesbuf::*", "futures_core::stream::Stream"]
 
 [features]
 brotli = ["dep:brotli"]
-default = []
+# Gzip alone is the default: the most widely used format, and one dependency. Everything else is
+# opt-in, so a build that only needs brotli never compiles flate2, and vice versa.
+default = ["gzip"]
+deflate = ["dep:flate2"]
 futures-stream = ["dep:futures-core", "dep:pin-project-lite"]
+gzip = ["dep:flate2"]
+zlib = ["dep:flate2"]
 
 [dependencies]
 brotli = { version = "8.0.4", default-features = false, features = ["std"], optional = true }
 bytesbuf = { version = "0.9.0", default-features = false, features = ["std"] }
-flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"], optional = true }
 futures-core = { version = "0.3.31", default-features = false, optional = true }
 pin-project-lite = { version = "0.2.16", optional = true }
 
 [dev-dependencies]
 brotli = { version = "8.0.4", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
 futures-core = { version = "0.3.31", default-features = false }
 pin-project-lite = "0.2.16"

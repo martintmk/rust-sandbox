@@ -40,6 +40,10 @@ pub struct Error {
     source: Option<Box<dyn StdError + Send + Sync>>,
 }
 
+#[cfg_attr(
+    all(not(test), not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))),
+    expect(dead_code, reason = "only the codecs construct these, and no format is enabled")
+)]
 impl Error {
     pub(crate) fn new(kind: Kind, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -49,6 +53,13 @@ impl Error {
         }
     }
 
+    #[cfg_attr(
+        all(
+            not(test),
+            not(any(feature = "deflate", feature = "futures-stream", feature = "gzip", feature = "zlib"))
+        ),
+        expect(dead_code, reason = "only the flate codecs and the stream adapters attach a source")
+    )]
     pub(crate) fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {
         self.source = Some(Box::new(source));
         self
@@ -74,7 +85,9 @@ impl Error {
     pub(crate) fn source(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::new(Kind::Source, "the underlying stream failed").with_source(source)
     }
+}
 
+impl Error {
     /// The compressed data is malformed, or its checksum does not match the decompressed bytes.
     #[must_use]
     pub fn is_corrupt_data(&self) -> bool {

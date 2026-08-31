@@ -24,15 +24,19 @@
 //! # Ok::<(), compressed::Error>(())
 //! ```
 
-use crate::flate::{FlateCompress, FlateDecompress, Wrapper};
-use crate::format_macro::define_format;
+use crate::flate::Wrapper;
+use crate::flate::codec::{FlateCompress, FlateDecompress};
+use crate::format::macros::define_format;
 
 define_format! {
     name = "gzip",
     encoder_codec = FlateCompress,
-    new_encoder = |level| FlateCompress::new(Wrapper::Gzip, level),
+    encoder_options = (),
+    new_encoder = |level, ()| FlateCompress::new(Wrapper::Gzip, level),
     decoder_codec = FlateDecompress,
-    new_decoder = |limits, concatenated| FlateDecompress::new(Wrapper::Gzip, limits, concatenated),
+    decoder_options = (),
+    default_limits = DecompressionLimits::DEFAULT,
+    new_decoder = |limits, concatenated, ()| FlateDecompress::new(Wrapper::Gzip, limits, concatenated),
     concatenated_default = true,
     concatenated_doc = "Sets whether concatenated gzip members decode as one logical stream.\n\nEnabled by default, matching `gzip(1)`.",
 }

@@ -16,11 +16,17 @@ mod sealed {
     impl Sealed for crate::brotli::Encoder {}
     #[cfg(feature = "brotli")]
     impl Sealed for crate::brotli::Decoder {}
+    #[cfg(feature = "deflate")]
     impl Sealed for crate::deflate::Encoder {}
+    #[cfg(feature = "deflate")]
     impl Sealed for crate::deflate::Decoder {}
+    #[cfg(feature = "gzip")]
     impl Sealed for crate::gzip::Encoder {}
+    #[cfg(feature = "gzip")]
     impl Sealed for crate::gzip::Decoder {}
+    #[cfg(feature = "zlib")]
     impl Sealed for crate::zlib::Encoder {}
+    #[cfg(feature = "zlib")]
     impl Sealed for crate::zlib::Decoder {}
 
     impl Sealed for alloc::boxed::Box<dyn super::Encoder> {}
@@ -114,6 +120,7 @@ pub trait Decoder: sealed::Sealed + fmt::Debug + Send {
 }
 
 /// Forwards the trait methods to a format module's inherent methods.
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 macro_rules! impl_codec_traits {
     ($($module:ident),+ $(,)?) => {
         $(
@@ -148,7 +155,14 @@ macro_rules! impl_codec_traits {
     };
 }
 
-impl_codec_traits!(deflate, gzip, zlib);
+#[cfg(feature = "brotli")]
+impl_codec_traits!(brotli);
+#[cfg(feature = "deflate")]
+impl_codec_traits!(deflate);
+#[cfg(feature = "gzip")]
+impl_codec_traits!(gzip);
+#[cfg(feature = "zlib")]
+impl_codec_traits!(zlib);
 
 // A boxed codec is itself a codec, so anything that accepts `impl Encoder` also accepts the
 // runtime-selected `Box<dyn Encoder>` that `Format::encoder` returns.
@@ -179,10 +193,8 @@ impl Decoder for Box<dyn Decoder> {
         (**self).pull()
     }
 }
-#[cfg(feature = "brotli")]
-impl_codec_traits!(brotli);
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gzip"))]
 mod tests {
     use bytesbuf::mem::GlobalPool;
 

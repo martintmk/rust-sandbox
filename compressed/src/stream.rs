@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytesbuf::BytesView;
+#[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 use bytesbuf::mem::MemoryShared;
 use futures_core::Stream;
 use pin_project_lite::pin_project;
@@ -153,18 +154,21 @@ impl<S> CompressStream<S> {
     /// To choose a compression level or output chunk size, build an encoder with its `builder` and
     /// pass it to [`CompressStream::new`]. For a format chosen at runtime, pass
     /// [`Format::encoder`][crate::Format::encoder].
+    #[cfg(feature = "gzip")]
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::gzip::Encoder::new(memory))
     }
 
     /// Compresses `source` as zlib at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[cfg(feature = "zlib")]
     #[must_use]
     pub fn zlib(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::zlib::Encoder::new(memory))
     }
 
     /// Compresses `source` as raw deflate at [`Level::DEFAULT`][crate::Level::DEFAULT].
+    #[cfg(feature = "deflate")]
     #[must_use]
     pub fn deflate(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::deflate::Encoder::new(memory))
@@ -259,6 +263,7 @@ impl<S> DecompressStream<S> {
     ///
     /// For a format chosen at runtime, pass [`Format::decoder`][crate::Format::decoder] to
     /// [`DecompressStream::new`].
+    #[cfg(feature = "gzip")]
     #[must_use]
     pub fn gzip(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::gzip::Decoder::new(memory))
@@ -266,6 +271,7 @@ impl<S> DecompressStream<S> {
 
     /// Decompresses a zlib `source` with
     /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    #[cfg(feature = "zlib")]
     #[must_use]
     pub fn zlib(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::zlib::Decoder::new(memory))
@@ -273,6 +279,7 @@ impl<S> DecompressStream<S> {
 
     /// Decompresses a raw deflate `source` with
     /// [`DecompressionLimits::DEFAULT`][crate::DecompressionLimits::DEFAULT].
+    #[cfg(feature = "deflate")]
     #[must_use]
     pub fn deflate(source: S, memory: impl MemoryShared) -> Self {
         Self::new(source, crate::deflate::Decoder::new(memory))
@@ -310,7 +317,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gzip"))]
 mod tests {
     use bytesbuf::mem::GlobalPool;
     use futures::executor::block_on;

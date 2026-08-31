@@ -1,6 +1,11 @@
 // Licensed under the MIT License.
 
 //! Behaviour tests that exercise the crate as a downstream consumer sees it.
+//!
+//! Gzip specific: interop fixtures produced by the system `gzip`, and the concatenated-member
+//! behaviour that only gzip enables by default.
+
+#![cfg(feature = "gzip")]
 
 use std::num::NonZeroUsize;
 
@@ -148,10 +153,16 @@ fn streams_a_large_payload_with_a_bounded_working_set() {
 fn rejects_a_bomb_before_materialising_it() {
     // 64 MiB of zeros compresses to a few kilobytes. The guard must fire long before the output is
     // fully materialised, so this test would be intolerably slow if it did not.
+    //
+    // The cap is set explicitly rather than relying on the default: deflate cannot expand by more
+    // than about 1032x, so its default ratio never fires on data the format could have produced.
+    // An absolute cap is what actually protects a caller that buffers the output.
     let bomb = gzip::compress(view(&vec![0_u8; 64 * 1024 * 1024]), GlobalPool::new()).expect("compression succeeds");
     assert!(bomb.len() < 100 * 1024, "the bomb should be tiny: {} bytes", bomb.len());
 
-    let mut decoder = gzip::Decoder::new(GlobalPool::new());
+    let mut decoder = gzip::Decoder::builder()
+        .limits(DecompressionLimits::DEFAULT.with_max_output_len(1024 * 1024))
+        .build(GlobalPool::new());
     decoder.push(bomb).expect("push succeeds");
     decoder.finish();
 
@@ -169,6 +180,18 @@ fn rejects_a_bomb_before_materialising_it() {
         "the guard should fire before the full expansion, stopped at {}",
         decoder.total_out()
     );
+}
+
+#[test]
+fn the_default_limits_accept_maximally_compressible_deflate_data() {
+    // Deflate's structural ceiling is about 1032x, so the gzip default must sit above it: data the
+    // format could legitimately have produced must never be rejected as a bomb.
+    let payload = vec![0_u8; 8 * 1024 * 1024];
+    let encoded = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
+
+    let plain = gzip::decompress(encoded, GlobalPool::new()).expect("default limits must accept maximal deflate compression");
+
+    assert_eq!(plain.len(), payload.len());
 }
 
 #[test]

@@ -23,15 +23,19 @@
 //! # Ok::<(), compressed::Error>(())
 //! ```
 
-use crate::flate::{FlateCompress, FlateDecompress, Wrapper};
-use crate::format_macro::define_format;
+use crate::flate::Wrapper;
+use crate::flate::codec::{FlateCompress, FlateDecompress};
+use crate::format::macros::define_format;
 
 define_format! {
     name = "zlib",
     encoder_codec = FlateCompress,
-    new_encoder = |level| FlateCompress::new(Wrapper::Zlib, level),
+    encoder_options = (),
+    new_encoder = |level, ()| FlateCompress::new(Wrapper::Zlib, level),
     decoder_codec = FlateDecompress,
-    new_decoder = |limits, concatenated| FlateDecompress::new(Wrapper::Zlib, limits, concatenated),
+    decoder_options = (),
+    default_limits = DecompressionLimits::DEFAULT,
+    new_decoder = |limits, concatenated, ()| FlateDecompress::new(Wrapper::Zlib, limits, concatenated),
     concatenated_default = false,
     concatenated_doc = "Sets whether concatenated zlib streams decode as one logical stream.\n\nDisabled by default: unlike gzip, concatenating zlib streams is not an established convention.",
 }

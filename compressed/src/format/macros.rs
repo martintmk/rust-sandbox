@@ -6,6 +6,21 @@
 //! drive and in their documentation. Generating them keeps the four modules honest — a change to
 //! the contract cannot drift between formats — without collapsing them into one type that would
 //! lose the compile-time distinction between, say, a gzip and a brotli encoder.
+//!
+//! # Format-specific settings
+//!
+//! Formats are not actually identical: gzip carries optional header metadata, brotli has a window
+//! size and a content mode, zlib takes a preset dictionary. The macro handles that with an
+//! `encoder_options` / `decoder_options` type, defaulted and threaded through to the codec. A
+//! format with no extra settings passes `()`; a format that has some declares its own options
+//! struct and writes the setters by hand in its own module, right next to the documentation that
+//! explains them.
+//!
+//! Only the portable settings appear on the runtime [`Format`][crate::Format] builders, because a
+//! builder that might produce any format cannot honour a setting that only one of them has. Code
+//! that needs both a runtime format and a format-specific setting branches on the format, uses the
+//! concrete builder, and boxes the result — which works because `Box<dyn Encoder>` is itself an
+//! [`Encoder`][crate::Encoder].
 
 /// Generates `Encoder`, `EncoderBuilder`, `Decoder`, `DecoderBuilder`, `compress` and `decompress`
 /// for one format.
@@ -13,8 +28,11 @@ macro_rules! define_format {
     (
         name = $name:literal,
         encoder_codec = $enc_codec:ty,
+        encoder_options = $enc_options:ty,
         new_encoder = $new_encoder:expr,
         decoder_codec = $dec_codec:ty,
+        decoder_options = $dec_options:ty,
+        default_limits = $default_limits:expr,
         new_decoder = $new_decoder:expr,
         concatenated_default = $concatenated_default:expr,
         concatenated_doc = $concatenated_doc:literal,
@@ -100,6 +118,11 @@ macro_rules! define_format {
         pub struct EncoderBuilder {
             level: Level,
             chunk_size: NonZeroUsize,
+            /// Settings that only this format has. `()` for formats with none.
+            ///
+            /// The generated builder never reads this beyond handing it to the codec; the format's
+            /// own module adds the setters that populate it.
+            options: $enc_options,
         }
 
         impl EncoderBuilder {
@@ -125,7 +148,7 @@ macro_rules! define_format {
             pub fn build(self, memory: impl MemoryShared) -> Encoder {
                 Encoder {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_encoder(self.level),
+                    codec: $new_encoder(self.level, self.options),
                 }
             }
         }
@@ -135,6 +158,7 @@ macro_rules! define_format {
                 Self {
                     level: Level::DEFAULT,
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
+                    options: <$enc_options>::default(),
                 }
             }
         }
@@ -216,6 +240,8 @@ macro_rules! define_format {
             limits: DecompressionLimits,
             chunk_size: NonZeroUsize,
             concatenated: bool,
+            /// Settings that only this format has. `()` for formats with none.
+            options: $dec_options,
         }
 
         impl DecoderBuilder {
@@ -250,7 +276,7 @@ macro_rules! define_format {
             pub fn build(self, memory: impl MemoryShared) -> Decoder {
                 Decoder {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_decoder(self.limits, self.concatenated),
+                    codec: $new_decoder(self.limits, self.concatenated, self.options),
                 }
             }
         }
@@ -258,9 +284,10 @@ macro_rules! define_format {
         impl Default for DecoderBuilder {
             fn default() -> Self {
                 Self {
-                    limits: DecompressionLimits::DEFAULT,
+                    limits: $default_limits,
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     concatenated: $concatenated_default,
+                    options: <$dec_options>::default(),
                 }
             }
         }

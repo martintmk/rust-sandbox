@@ -1,60 +1,16 @@
 // Licensed under the MIT License.
 
-//! The deflate family: raw deflate, zlib and gzip.
-//!
-//! All three wrap the same deflate payload, differing only in framing, so they share one codec
-//! implementation parameterised by [`Wrapper`].
+//! Binds the deflate family to the engine, driven segment by segment.
 
 use std::mem::MaybeUninit;
 
-use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
+use flate2::{Compress, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::engine::{Codec, Step};
 use crate::error::{Error, Result};
+use crate::flate::Wrapper;
 use crate::level::Level;
 use crate::limits::DecompressionLimits;
-
-/// The deflate window size exponent. 15 is the maximum, giving the best compression ratio.
-const WINDOW_BITS: u8 = 15;
-
-/// The container framing wrapped around a deflate payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Wrapper {
-    /// Raw deflate (RFC 1951): no header and no checksum.
-    Raw,
-    /// zlib (RFC 1950): a two byte header and an Adler-32 trailer.
-    Zlib,
-    /// gzip (RFC 1952): a ten byte header and a CRC-32 plus length trailer.
-    Gzip,
-}
-
-impl Wrapper {
-    fn compressor(self, level: Level) -> Compress {
-        let compression = Compression::new(u32::from(level.get()));
-
-        match self {
-            Self::Raw => Compress::new(compression, false),
-            Self::Zlib => Compress::new(compression, true),
-            Self::Gzip => Compress::new_gzip(compression, WINDOW_BITS),
-        }
-    }
-
-    fn decompressor(self) -> Decompress {
-        match self {
-            Self::Raw => Decompress::new(false),
-            Self::Zlib => Decompress::new(true),
-            Self::Gzip => Decompress::new_gzip(WINDOW_BITS),
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Raw => "deflate",
-            Self::Zlib => "zlib",
-            Self::Gzip => "gzip",
-        }
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct FlateCompress {
@@ -160,16 +116,9 @@ impl Codec for FlateDecompress {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_wrapper_has_a_name() {
-        assert_eq!(Wrapper::Raw.name(), "deflate");
-        assert_eq!(Wrapper::Zlib.name(), "zlib");
-        assert_eq!(Wrapper::Gzip.name(), "gzip");
-    }
 
     #[test]
     fn wrappers_produce_distinguishable_headers() {

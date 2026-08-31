@@ -6,7 +6,9 @@
 //! so a format that behaves differently from its siblings — or an abstraction that quietly only
 //! fits the deflate family — fails here rather than surprising a consumer.
 
-use std::num::NonZeroUsize;
+#![cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
+
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
@@ -254,12 +256,15 @@ macro_rules! format_contract {
             }
 
             #[test]
-            fn enforces_the_expansion_limit() {
-                // Highly compressible input expands far past the default ratio.
+            fn enforces_a_configured_expansion_limit() {
+                // A ratio the data is guaranteed to exceed, so the mechanism itself is tested
+                // rather than whichever default the format happens to carry.
                 let memory = GlobalPool::new();
                 let bomb = $module::compress(view(&vec![0_u8; 16 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
 
-                let mut decoder = $module::Decoder::new(memory);
+                let mut decoder = $module::Decoder::builder()
+                    .limits(DecompressionLimits::UNLIMITED.with_max_ratio(NonZeroU32::new(4).expect("4 is not zero")))
+                    .build(memory);
                 decoder.push(bomb).expect("push succeeds");
                 Decoder::finish(&mut decoder);
 
@@ -276,6 +281,59 @@ macro_rules! format_contract {
                     decoder.total_out() < 16 * 1024 * 1024,
                     "the guard should fire before the full expansion"
                 );
+            }
+
+            #[test]
+            fn default_limits_accept_ordinary_highly_compressible_data() {
+                // Regression guard. A single portable ratio limit was calibrated on deflate, whose
+                // structural ceiling is ~1032x. Brotli legitimately reaches tens of thousands of
+                // times expansion, so that limit rejected ordinary repetitive input — a repeated
+                // sentence, and JSON. Each format now carries its own default.
+                let memory = GlobalPool::new();
+
+                let cases: [(&str, Vec<u8>); 3] = [
+                    ("repeated short string", b"windowed ".repeat(20_000)),
+                    (
+                        "repeated sentence",
+                        b"the quick brown fox jumps over the lazy dog. ".repeat(20_000),
+                    ),
+                    (
+                        "repetitive json",
+                        br#"{"id":1,"name":"widget","tags":["a","b"]},"#.repeat(12_000),
+                    ),
+                ];
+
+                for (label, data) in cases {
+                    let encoded = $module::compress(view(&data), memory.clone()).expect("compression succeeds");
+                    let ratio = data.len() / encoded.len().max(1);
+
+                    let plain = $module::decompress(encoded, memory.clone())
+                        .unwrap_or_else(|error| panic!("default limits rejected {label} at {ratio}x expansion: {error}"));
+
+                    assert_eq!(plain.to_vec(), data, "{label} did not round trip");
+                }
+            }
+
+            #[test]
+            fn an_absolute_cap_is_enforced() {
+                let memory = GlobalPool::new();
+                let encoded = $module::compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone()).expect("compression succeeds");
+
+                let mut decoder = $module::Decoder::builder()
+                    .limits(DecompressionLimits::UNLIMITED.with_max_output_len(1024))
+                    .build(memory);
+                decoder.push(encoded).expect("push succeeds");
+                Decoder::finish(&mut decoder);
+
+                let error = loop {
+                    match Decoder::pull(&mut decoder) {
+                        Ok(Output::Data(_)) => {}
+                        Ok(_) => panic!("the cap should have fired"),
+                        Err(error) => break error,
+                    }
+                };
+
+                assert!(error.is_limit_exceeded(), "got {error}");
             }
 
             #[test]
@@ -382,8 +440,11 @@ macro_rules! format_contract {
     };
 }
 
+#[cfg(feature = "deflate")]
 format_contract!(deflate, Format::Deflate);
+#[cfg(feature = "zlib")]
 format_contract!(zlib, Format::Zlib);
+#[cfg(feature = "gzip")]
 format_contract!(gzip, Format::Gzip);
 #[cfg(feature = "brotli")]
 format_contract!(brotli, Format::Brotli);
@@ -391,7 +452,10 @@ format_contract!(brotli, Format::Brotli);
 #[test]
 fn every_compiled_format_satisfies_the_contract() {
     // Guards against a format being added to `Format::ALL` without being added to the suite above.
-    let covered = if cfg!(feature = "brotli") { 4 } else { 3 };
+    let covered = usize::from(cfg!(feature = "deflate"))
+        + usize::from(cfg!(feature = "zlib"))
+        + usize::from(cfg!(feature = "gzip"))
+        + usize::from(cfg!(feature = "brotli"));
 
     assert_eq!(
         Format::ALL.len(),
@@ -454,23 +518,124 @@ fn content_negotiation_selects_a_supported_format() {
         accept_encoding.split(',').find_map(Format::from_content_encoding)
     }
 
-    assert_eq!(negotiate("identity, gzip"), Some(Format::Gzip));
-    assert_eq!(negotiate("deflate"), Some(Format::Zlib));
     assert_eq!(negotiate("identity"), None);
+
+    #[cfg(feature = "gzip")]
+    assert_eq!(negotiate("identity, gzip"), Some(Format::Gzip));
+    #[cfg(feature = "zlib")]
+    assert_eq!(negotiate("deflate"), Some(Format::Zlib));
 
     // Negotiation must degrade gracefully: a token for a format this build does not support is
     // skipped in favour of the next one the client offered.
     #[cfg(feature = "brotli")]
     assert_eq!(negotiate("br, gzip, deflate"), Some(Format::Brotli));
-    #[cfg(not(feature = "brotli"))]
+    #[cfg(all(not(feature = "brotli"), feature = "gzip"))]
     assert_eq!(negotiate("br, gzip, deflate"), Some(Format::Gzip));
+    #[cfg(all(not(feature = "brotli"), not(feature = "gzip"), feature = "zlib"))]
+    assert_eq!(negotiate("br, gzip, deflate"), Some(Format::Zlib));
+    #[cfg(all(not(feature = "brotli"), not(feature = "gzip"), not(feature = "zlib")))]
+    assert_eq!(negotiate("br, gzip, deflate"), None, "raw deflate has no HTTP token");
 
-    let memory = GlobalPool::new();
-    let format = negotiate("gzip").expect("gzip is always supported");
-    let encoded = format.compress(view(b"negotiated"), memory.clone()).expect("compression succeeds");
+    // Whatever was negotiated must actually work.
+    if let Some(format) = negotiate("br, gzip, deflate") {
+        let memory = GlobalPool::new();
+        let encoded = format.compress(view(b"negotiated"), memory.clone()).expect("compression succeeds");
 
-    assert_eq!(
-        format.decompress(encoded, memory).expect("decompression succeeds").to_vec(),
-        b"negotiated".to_vec()
-    );
+        assert_eq!(
+            format.decompress(encoded, memory).expect("decompression succeeds").to_vec(),
+            b"negotiated".to_vec()
+        );
+    }
+}
+
+/// Format-specific settings: how a format extends the shared builder without breaking the contract.
+#[cfg(feature = "brotli")]
+mod format_specific_settings {
+    use compressed::brotli;
+    use compressed::brotli::{Mode, WindowSize};
+
+    use super::*;
+
+    #[test]
+    fn a_format_specific_setting_still_produces_a_conforming_stream() {
+        // Whatever brotli-only knobs are set, the result must still satisfy the shared contract.
+        let memory = GlobalPool::new();
+        let data = b"format specific settings ".repeat(400);
+
+        let mut tuned = brotli::Encoder::builder()
+            .level(Level::BEST)
+            .mode(Mode::Text)
+            .window_size(WindowSize::new(20).expect("20 is in range"))
+            .build(memory.clone());
+
+        let encoded = encode(&mut tuned, &view(&data), usize::MAX).expect("compression succeeds");
+        let plain = brotli::decompress(encoded, memory).expect("decompression succeeds");
+
+        assert_eq!(plain.to_vec(), data);
+    }
+
+    #[test]
+    fn window_size_rejects_values_outside_brotlis_range() {
+        // Configuration input must report a mistake, not panic.
+        assert_eq!(WindowSize::new(9), None);
+        assert_eq!(WindowSize::new(25), None);
+        assert_eq!(WindowSize::new(10), Some(WindowSize::MIN));
+        assert_eq!(WindowSize::new(24), Some(WindowSize::MAX));
+        assert_eq!(WindowSize::default(), WindowSize::DEFAULT);
+    }
+
+    #[test]
+    fn a_smaller_window_still_round_trips() {
+        let memory = GlobalPool::new();
+        let data = b"windowed ".repeat(20_000);
+
+        for exponent in [10, 16, 24] {
+            let window = WindowSize::new(exponent).expect("exponent is in range");
+            let mut tuned = brotli::Encoder::builder().window_size(window).build(memory.clone());
+
+            let encoded = encode(&mut tuned, &view(&data), usize::MAX).expect("compression succeeds");
+            let plain = brotli::decompress(encoded, memory.clone()).expect("decompression succeeds");
+
+            assert_eq!(plain.to_vec(), data, "window 2^{exponent} did not round trip");
+        }
+    }
+
+    #[test]
+    fn a_runtime_chosen_format_can_still_reach_format_specific_settings() {
+        // The documented escape hatch: a runtime `Format` builder cannot carry a brotli-only
+        // setting, so branch on the format, use the concrete builder, and box the result. That
+        // works because `Box<dyn Encoder>` is itself an `Encoder`.
+        fn encoder_for(format: Format, memory: GlobalPool) -> Box<dyn Encoder> {
+            match format {
+                Format::Brotli => Box::new(brotli::Encoder::builder().mode(Mode::Text).build(memory)),
+                other => other.encoder().build(memory),
+            }
+        }
+
+        let memory = GlobalPool::new();
+        let data = b"escape hatch ".repeat(200);
+
+        for &format in Format::ALL {
+            let mut tuned = encoder_for(format, memory.clone());
+            let encoded = encode(&mut *tuned, &view(&data), usize::MAX).expect("compression succeeds");
+
+            let plain = format.decompress(encoded, memory.clone()).expect("decompression succeeds");
+            assert_eq!(plain.to_vec(), data, "{format:?} failed through the escape hatch");
+        }
+    }
+
+    #[test]
+    fn text_mode_does_not_change_the_decoded_bytes() {
+        // The mode is an encoder-side hint only: it must never alter what comes back out.
+        let memory = GlobalPool::new();
+        let data = b"the quick brown fox jumps over the lazy dog ".repeat(300);
+
+        for mode in [Mode::Generic, Mode::Text, Mode::Font] {
+            let mut tuned = brotli::Encoder::builder().mode(mode).build(memory.clone());
+            let encoded = encode(&mut tuned, &view(&data), usize::MAX).expect("compression succeeds");
+
+            let plain = brotli::decompress(encoded, memory.clone()).expect("decompression succeeds");
+            assert_eq!(plain.to_vec(), data, "{mode:?} changed the decoded bytes");
+        }
+    }
 }
