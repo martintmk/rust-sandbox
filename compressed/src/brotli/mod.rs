@@ -49,7 +49,7 @@ define_format! {
     decoder_codec = BrotliDecompress,
     decoder_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decoder = |limits, concatenated, ()| BrotliDecompress::new(limits, concatenated),
+    new_decoder = |limits, concatenated, (), _pool| BrotliDecompress::new(limits, concatenated),
     concatenated_default = false,
     concatenated_doc = "Sets whether consecutive brotli streams decode as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
 }
@@ -110,6 +110,26 @@ impl WindowSize {
 impl Default for WindowSize {
     fn default() -> Self {
         Self::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for WindowSize {
+    type Error = crate::Error;
+
+    fn try_from(exponent: u8) -> core::result::Result<Self, Self::Error> {
+        Self::new(exponent).ok_or_else(|| {
+            crate::Error::invalid_configuration(format!(
+                "brotli window size 2^{exponent} is out of range; expected the exponent in {}..={}",
+                Self::MIN.get(),
+                Self::MAX.get()
+            ))
+        })
+    }
+}
+
+impl From<WindowSize> for u8 {
+    fn from(window_size: WindowSize) -> Self {
+        window_size.get()
     }
 }
 

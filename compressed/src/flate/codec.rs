@@ -87,37 +87,78 @@ impl Codec for FlateCompress {
 
 #[derive(Debug)]
 pub(crate) struct FlateDecompress {
-    decompress: Decompress,
+    /// `Some` until the engine is handed back in `drop`.
+    decompress: Option<Decompress>,
     wrapper: Wrapper,
     limits: FormatLimits,
     concatenated: bool,
+    /// Only present where some container's decompressor can actually be recycled.
+    #[cfg(any(feature = "deflate", feature = "zlib"))]
+    recycle: Option<Pool>,
 }
 
 impl FlateDecompress {
-    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, concatenated: bool) -> Self {
+    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, concatenated: bool, pool: Option<Pool>) -> Self {
+        // Only containers whose reset restores their framing can be recycled.
+        let pool = pool.filter(|_| wrapper.reset_restores_framing());
+        let decompress = Self::checkout(wrapper, pool.as_ref());
+
+        #[cfg(not(any(feature = "deflate", feature = "zlib")))]
+        drop(pool);
+
         Self {
-            decompress: wrapper.decompressor(),
+            decompress: Some(decompress),
             wrapper,
             limits,
             concatenated,
+            #[cfg(any(feature = "deflate", feature = "zlib"))]
+            recycle: pool,
+        }
+    }
+
+    fn checkout(wrapper: Wrapper, pool: Option<&Pool>) -> Decompress {
+        #[cfg(any(feature = "deflate", feature = "zlib"))]
+        if let Some(pool) = pool
+            && let Some(engine) = pool.take_decompressor(wrapper)
+        {
+            return engine;
+        }
+
+        let _ = pool;
+        wrapper.decompressor()
+    }
+
+    fn engine(&mut self) -> &mut Decompress {
+        self.decompress.as_mut().expect("the engine is only taken in drop")
+    }
+}
+
+#[cfg(any(feature = "deflate", feature = "zlib"))]
+impl Drop for FlateDecompress {
+    fn drop(&mut self) {
+        if let Some(pool) = self.recycle.take()
+            && let Some(engine) = self.decompress.take()
+        {
+            pool.return_decompressor(self.wrapper, engine);
         }
     }
 }
 
 impl Codec for FlateDecompress {
     fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _last_input: bool) -> Result<(Step, usize, usize)> {
-        let before_in = self.decompress.total_in();
-        let before_out = self.decompress.total_out();
+        let wrapper = self.wrapper;
+        let decompress = self.engine();
+        let before_in = decompress.total_in();
+        let before_out = decompress.total_out();
 
-        let status = self
-            .decompress
+        let status = decompress
             .decompress_uninit(input, output, FlushDecompress::None)
             .map_err(|error| {
-                Error::corrupt_data(format!("the compressed data is not a valid {} stream", self.wrapper.name())).with_source(error)
+                Error::corrupt_data(format!("the compressed data is not a valid {} stream", wrapper.name())).with_source(error)
             })?;
 
-        let consumed = usize::try_from(self.decompress.total_in() - before_in).unwrap_or(usize::MAX);
-        let produced = usize::try_from(self.decompress.total_out() - before_out).unwrap_or(usize::MAX);
+        let consumed = usize::try_from(decompress.total_in() - before_in).unwrap_or(usize::MAX);
+        let produced = usize::try_from(decompress.total_out() - before_out).unwrap_or(usize::MAX);
 
         let step = if status == Status::StreamEnd {
             Step::StreamEnd
@@ -138,7 +179,7 @@ impl Codec for FlateDecompress {
         // framing (which the engine encodes as `window_bits + 16`). Resetting a gzip decoder
         // silently drops it to raw deflate, and the next member then fails with "invalid block
         // type".
-        self.decompress = self.wrapper.decompressor();
+        self.decompress = Some(self.wrapper.decompressor());
         false
     }
 

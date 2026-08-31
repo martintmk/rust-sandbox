@@ -65,6 +65,35 @@ impl Wrapper {
         }
     }
 
+    /// Whether a recycled decompressor keeps this container's framing after a reset.
+    ///
+    /// `Decompress::reset` takes a boolean selecting raw deflate or zlib, so it cannot express
+    /// gzip, which the engine encodes as `window_bits + 16`. Recycling a gzip decompressor would
+    /// silently drop it to raw deflate, so gzip decompressors are never pooled.
+    pub(crate) fn reset_restores_framing(self) -> bool {
+        match self {
+            #[cfg(feature = "deflate")]
+            Self::Raw => true,
+            #[cfg(feature = "zlib")]
+            Self::Zlib => true,
+            #[cfg(feature = "gzip")]
+            Self::Gzip => false,
+        }
+    }
+
+    /// The boolean `Decompress::reset` needs to restore this container.
+    #[cfg(any(feature = "deflate", feature = "zlib"))]
+    pub(crate) fn expects_zlib_header(self) -> bool {
+        match self {
+            #[cfg(feature = "deflate")]
+            Self::Raw => false,
+            #[cfg(feature = "zlib")]
+            Self::Zlib => true,
+            #[cfg(feature = "gzip")]
+            Self::Gzip => false,
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             #[cfg(feature = "deflate")]

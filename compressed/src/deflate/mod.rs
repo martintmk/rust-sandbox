@@ -36,7 +36,7 @@ define_format! {
     decoder_codec = FlateDecompress,
     decoder_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,
-    new_decoder = |limits, concatenated, ()| FlateDecompress::new(Wrapper::Raw, limits, concatenated),
+    new_decoder = |limits, concatenated, (), pool| FlateDecompress::new(Wrapper::Raw, limits, concatenated, pool),
     concatenated_default = false,
     concatenated_doc = "Sets whether consecutive deflate streams decode as one logical stream.\n\nDisabled by default: raw deflate carries no framing, so trailing bytes are usually not another stream.",
 }

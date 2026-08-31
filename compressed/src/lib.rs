@@ -166,7 +166,7 @@ mod error;
 #[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
 mod flate;
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
-mod format;
+pub mod format;
 #[cfg(feature = "gzip")]
 pub mod gzip;
 mod level;
@@ -182,7 +182,7 @@ mod stream;
 pub use codec::{Decoder, Encoder};
 pub use error::{Error, Result};
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
-pub use format::{DecoderBuilder, EncoderBuilder, Format};
+pub use format::Format;
 pub use level::Level;
 pub use limits::DecompressionLimits;
 pub use output::Output;

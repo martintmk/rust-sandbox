@@ -247,11 +247,12 @@ macro_rules! define_format {
         }
 
         /// Configures a [`Decoder`].
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Debug, Clone)]
         pub struct DecoderBuilder {
             limits: DecompressionLimits,
             chunk_size: NonZeroUsize,
             concatenated: bool,
+            pool: Option<$crate::Pool>,
             /// Settings that only this format has. `()` for formats with none.
             options: $dec_options,
         }
@@ -285,12 +286,28 @@ macro_rules! define_format {
                 self
             }
 
+            /// Recycles engine state through a shared [`Pool`][crate::Pool].
+            ///
+            /// The engine is returned when the decoder is dropped. Without a pool each decoder
+            /// builds its own engine, which is the default. See [`Pool`][crate::Pool] for which
+            /// engines are actually recycled.
+            #[must_use]
+            pub fn pool(mut self, pool: $crate::Pool) -> Self {
+                self.pool = Some(pool);
+                self
+            }
+
             /// Builds the decoder, drawing its output buffers from `memory`.
             #[must_use]
             pub fn build(self, memory: impl MemoryShared) -> Decoder {
                 Decoder {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_decoder(self.limits.resolve($default_limits), self.concatenated, self.options),
+                    codec: $new_decoder(
+                        self.limits.resolve($default_limits),
+                        self.concatenated,
+                        self.options,
+                        self.pool,
+                    ),
                 }
             }
         }
@@ -301,6 +318,7 @@ macro_rules! define_format {
                     limits: DecompressionLimits::new(),
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     concatenated: $concatenated_default,
+                    pool: None,
                     options: <$dec_options>::default(),
                 }
             }

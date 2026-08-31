@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(quality(Level::BEST), 11, "the ceiling must line up");
 
         let mut previous = None;
-        for raw in 0..=Level::MAX {
+        for raw in 0..=Level::MAX.get() {
             let level = Level::new(raw).expect("level is in range");
             let mapped = quality(level);
 

@@ -14,6 +14,7 @@ pub(crate) enum Kind {
     UnexpectedEndOfStream,
     LimitExceeded,
     InvalidState,
+    InvalidConfiguration,
     Source,
 }
 
@@ -81,6 +82,10 @@ impl Error {
         Self::new(Kind::InvalidState, message)
     }
 
+    pub(crate) fn invalid_configuration(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::new(Kind::InvalidConfiguration, message)
+    }
+
     #[cfg(feature = "futures-stream")]
     pub(crate) fn source(source: impl StdError + Send + Sync + 'static) -> Self {
         Self::new(Kind::Source, "the underlying stream failed").with_source(source)
@@ -117,6 +122,15 @@ impl Error {
     #[must_use]
     pub fn is_invalid_state(&self) -> bool {
         self.kind == Kind::InvalidState
+    }
+
+    /// A configuration value was outside the range the format accepts.
+    ///
+    /// Produced by the `TryFrom` conversions on types such as [`Level`][crate::Level], where the
+    /// value typically came from a configuration file or a command line.
+    #[must_use]
+    pub fn is_invalid_configuration(&self) -> bool {
+        self.kind == Kind::InvalidConfiguration
     }
 
     /// The stream feeding the codec failed.
@@ -157,6 +171,8 @@ mod tests {
             (Error::limit_exceeded("too big"), [false, false, true, false]),
             (Error::invalid_state("wrong order"), [false, false, false, true]),
         ];
+
+        assert!(Error::invalid_configuration("out of range").is_invalid_configuration());
 
         for (error, expected) in cases {
             let actual = [

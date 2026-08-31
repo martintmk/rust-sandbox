@@ -42,6 +42,21 @@ impl Output {
         }
     }
 
+    /// Whether bytes are available.
+    #[must_use]
+    pub fn is_data(&self) -> bool {
+        matches!(*self, Self::Data(_))
+    }
+
+    /// Returns the bytes without consuming them, if this is [`Output::Data`].
+    #[must_use]
+    pub fn as_data(&self) -> Option<&BytesView> {
+        match *self {
+            Self::Data(ref data) => Some(data),
+            _ => None,
+        }
+    }
+
     /// Whether the codec needs more input before it can produce more output.
     #[must_use]
     pub fn is_need_input(&self) -> bool {
@@ -76,9 +91,18 @@ mod tests {
         let memory = GlobalPool::new();
         let data = Output::Data(BytesView::copied_from_slice(b"x", &memory));
 
-        assert!(!data.is_need_input() && !data.is_done());
-        assert!(Output::NeedInput.is_need_input() && !Output::NeedInput.is_done());
-        assert!(Output::Done.is_done() && !Output::Done.is_need_input());
+        assert!(data.is_data() && !data.is_need_input() && !data.is_done());
+        assert!(Output::NeedInput.is_need_input() && !Output::NeedInput.is_data() && !Output::NeedInput.is_done());
+        assert!(Output::Done.is_done() && !Output::Done.is_data() && !Output::Done.is_need_input());
+    }
+
+    #[test]
+    fn data_can_be_inspected_without_being_consumed() {
+        let memory = GlobalPool::new();
+        let output = Output::Data(BytesView::copied_from_slice(b"peek", &memory));
+
+        assert_eq!(output.as_data().map(BytesView::len), Some(4));
+        assert_eq!(output.into_data().expect("still there").to_vec(), b"peek".to_vec());
     }
 
     #[test]

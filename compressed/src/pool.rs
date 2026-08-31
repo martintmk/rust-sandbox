@@ -94,10 +94,13 @@ pub(crate) struct EngineKey {
 ///
 /// | Engine | Reused? |
 /// |---|---|
-/// | deflate-family compressor | yes — expensive to build, and `reset` preserves its container and level |
-/// | deflate-family decompressor | no — cheap to build, and a reset cannot restore gzip framing |
-/// | brotli encoder | no — cheap to build, and no reset exists upstream |
-/// | brotli decoder | no — cheap to build, and no reset exists upstream |
+/// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] / [`gzip`][crate::gzip] compressor | yes — `reset` preserves its container and level |
+/// | [`deflate`][crate::deflate] / [`zlib`][crate::zlib] decompressor | yes — `reset` restores the framing |
+/// | [`gzip`][crate::gzip] decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
+/// | [`brotli`][crate::brotli] encoder and decoder | no — no reset exists upstream |
+///
+/// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
+/// the fixed setup cost is a comparable share of the work either way.
 ///
 /// Because this is an implementation detail rather than a contract, more engines can start being
 /// pooled without any change to calling code.
@@ -115,6 +118,9 @@ pub struct Pool {
 struct Inner {
     #[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
     compressors: Mutex<HashMap<EngineKey, Vec<flate2::Compress>>>,
+    /// Decompressors carry no level, so the container alone identifies them.
+    #[cfg(any(feature = "deflate", feature = "zlib"))]
+    decompressors: Mutex<HashMap<Wrapper, Vec<flate2::Decompress>>>,
     capacity: usize,
 }
 
@@ -135,6 +141,8 @@ impl Pool {
             inner: Arc::new(Inner {
                 #[cfg(any(feature = "deflate", feature = "gzip", feature = "zlib"))]
                 compressors: Mutex::new(HashMap::new()),
+                #[cfg(any(feature = "deflate", feature = "zlib"))]
+                decompressors: Mutex::new(HashMap::new()),
                 capacity,
             }),
         }
@@ -169,6 +177,33 @@ impl Pool {
 
         if let Ok(mut guard) = self.inner.compressors.lock() {
             let idle = guard.entry(key).or_default();
+            if idle.len() < self.inner.capacity {
+                idle.push(engine);
+            }
+        }
+    }
+
+    /// Takes an idle decompressor for `wrapper`, or reports that one must be built.
+    ///
+    /// Only called for containers whose reset restores the framing; see
+    /// [`Wrapper::reset_restores_framing`].
+    #[cfg(any(feature = "deflate", feature = "zlib"))]
+    pub(crate) fn take_decompressor(&self, wrapper: Wrapper) -> Option<flate2::Decompress> {
+        let mut engine = self.inner.decompressors.lock().ok()?.get_mut(&wrapper).and_then(Vec::pop)?;
+
+        engine.reset(wrapper.expects_zlib_header());
+        Some(engine)
+    }
+
+    /// Returns a decompressor for reuse, dropping it if the pool is already full.
+    #[cfg(any(feature = "deflate", feature = "zlib"))]
+    pub(crate) fn return_decompressor(&self, wrapper: Wrapper, engine: flate2::Decompress) {
+        if self.inner.capacity == 0 {
+            return;
+        }
+
+        if let Ok(mut guard) = self.inner.decompressors.lock() {
+            let idle = guard.entry(wrapper).or_default();
             if idle.len() < self.inner.capacity {
                 idle.push(engine);
             }

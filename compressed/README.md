@@ -153,18 +153,18 @@ Both are off by default, so the base build pulls in nothing beyond `bytesbuf` an
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/compressed/0.1.0/compressed/deflate/index.html
  [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=Decoder
- [__link11]: https://docs.rs/compressed/0.1.0/compressed/?search=Format
+ [__link11]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format
  [__link12]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
  [__link13]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
- [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::compress
- [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::decompress
+ [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::compress
+ [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::decompress
  [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits
  [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::default
  [__link18]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
  [__link19]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
  [__link2]: https://docs.rs/compressed/0.1.0/compressed/zlib/index.html
  [__link20]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html
- [__link21]: https://docs.rs/compressed/0.1.0/compressed/?search=Format::Brotli
+ [__link21]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::Brotli
  [__link22]: https://docs.rs/futures_core/0.3.34/futures_core/?search=Stream
  [__link3]: https://docs.rs/compressed/0.1.0/compressed/gzip/index.html
  [__link4]: https://docs.rs/compressed/0.1.0/compressed/brotli/index.html

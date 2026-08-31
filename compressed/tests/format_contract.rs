@@ -179,7 +179,7 @@ macro_rules! format_contract {
             fn every_level_produces_a_decodable_stream() {
                 let data = payload();
 
-                for raw in 0..=Level::MAX {
+                for raw in 0..=Level::MAX.get() {
                     let level = Level::new(raw).expect("level is in range");
                     let memory = GlobalPool::new();
 
@@ -740,6 +740,70 @@ mod pooling {
                 });
             }
         });
+    }
+
+    #[test]
+    fn a_pooled_decoder_round_trips_every_format() {
+        // Whether or not a format's engine is actually recycled is an implementation detail; the
+        // decoded bytes must be identical either way.
+        let payloads = [b"first response body".repeat(60), b"a different second body".repeat(90)];
+
+        for &format in Format::ALL {
+            let pool = Pool::new();
+            let memory = GlobalPool::new();
+
+            for round in 0..4 {
+                for payload in &payloads {
+                    let encoded = format.compress(view(payload), memory.clone()).expect("compression succeeds");
+
+                    let mut decoder = format.decoder().pool(pool.clone()).build(memory.clone());
+                    let plain = decode(&mut *decoder, &encoded, usize::MAX).expect("decompression succeeds");
+
+                    assert_eq!(plain.to_vec(), *payload, "{format:?} round {round} diverged when pooled");
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "zlib")]
+    #[test]
+    fn a_decoder_abandoned_mid_stream_does_not_poison_the_pool() {
+        use compressed::zlib;
+
+        let pool = Pool::new();
+        let memory = GlobalPool::new();
+        let payload = b"a stream that gets cut short ".repeat(200);
+        let encoded = zlib::compress(view(&payload), memory.clone()).expect("compression succeeds");
+
+        {
+            let mut abandoned = zlib::Decoder::builder().pool(pool.clone()).build(memory.clone());
+            abandoned.push(encoded.range(0..encoded.len() / 2)).expect("push succeeds");
+            let _ = Decoder::pull(&mut abandoned).expect("pull succeeds");
+            // Dropped mid-stream, so its engine is dirty.
+        }
+
+        let mut recovered = zlib::Decoder::builder().pool(pool).build(memory);
+        let plain = decode(&mut recovered, &encoded, usize::MAX).expect("decompression succeeds");
+
+        assert_eq!(plain.to_vec(), payload, "a recycled dirty decompressor must be reset");
+    }
+
+    #[test]
+    fn gzip_decoders_are_not_recycled() {
+        // `Decompress::reset` takes a boolean that cannot express gzip framing, so a recycled gzip
+        // decompressor would silently decode as raw deflate. It must therefore never be pooled —
+        // and the caller must not be able to tell the difference.
+        let pool = Pool::new();
+        let memory = GlobalPool::new();
+        let payload = b"gzip stays correct ".repeat(200);
+        let encoded = gzip::compress(view(&payload), memory.clone()).expect("compression succeeds");
+
+        for round in 0..5 {
+            let mut decoder = gzip::Decoder::builder().pool(pool.clone()).build(memory.clone());
+            let plain = decode(&mut decoder, &encoded, usize::MAX).expect("decompression succeeds");
+
+            assert_eq!(plain.to_vec(), payload, "gzip round {round} decoded incorrectly");
+        }
     }
 
     #[test]

@@ -1,5 +1,15 @@
 // Licensed under the MIT License.
 
+//! Choosing a compression format at runtime.
+//!
+//! The format modules ([`gzip`][crate::gzip] and friends) are the right choice when the format is
+//! known at compile time. This module is for when it is not: encoding whatever a client asked for,
+//! or decoding whatever a peer declared it sent.
+//!
+//! [`Format`] is re-exported at the crate root, since it is the entry point; the builders it
+//! returns live here so they do not collide with the per-format builders such as
+//! [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder].
+
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib"))]
 pub(crate) mod macros;
 
@@ -13,6 +23,7 @@ use crate::engine::DEFAULT_CHUNK_SIZE;
 use crate::error::Result;
 use crate::level::Level;
 use crate::limits::DecompressionLimits;
+use crate::pool::Pool;
 
 /// A compression format, selectable at runtime.
 ///
@@ -129,6 +140,7 @@ impl Format {
             format: self,
             level: Level::DEFAULT,
             chunk_size: default_chunk_size(),
+            pool: None,
         }
     }
 
@@ -140,6 +152,7 @@ impl Format {
             limits: DecompressionLimits::new(),
             chunk_size: default_chunk_size(),
             concatenated: None,
+            pool: None,
         }
     }
 
@@ -197,12 +210,14 @@ fn drain(mut pull: impl FnMut() -> Result<crate::Output>) -> Result<BytesView> {
 /// Configures an encoder for a [`Format`] chosen at runtime.
 ///
 /// Mirrors the per-format builders such as [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder],
-/// but produces a boxed [`Encoder`] so the format need not be known at compile time.
-#[derive(Debug, Clone, Copy)]
+/// but produces a boxed [`Encoder`] so the format need not be known at compile time. Reach it
+/// through [`Format::encoder`] rather than naming it directly.
+#[derive(Debug, Clone)]
 pub struct EncoderBuilder {
     format: Format,
     level: Level,
     chunk_size: NonZeroUsize,
+    pool: Option<Pool>,
 }
 
 impl EncoderBuilder {
@@ -220,18 +235,33 @@ impl EncoderBuilder {
         self
     }
 
+    /// Recycles engine state through a shared [`Pool`].
+    ///
+    /// Building a compressor is not free, so a service that encodes many messages should hand every
+    /// encoder the same pool. The engine is returned when the encoder is dropped. Without a pool
+    /// each encoder builds its own engine, which is the default.
+    #[must_use]
+    pub fn pool(mut self, pool: Pool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
     /// Builds the encoder, drawing its output buffers from `memory`.
     #[must_use]
     pub fn build(self, memory: impl MemoryShared) -> Box<dyn Encoder> {
         macro_rules! build {
-            ($module:ident) => {
-                Box::new(
-                    crate::$module::Encoder::builder()
-                        .level(self.level)
-                        .output_chunk_size(self.chunk_size)
-                        .build(memory),
-                )
-            };
+            ($module:ident) => {{
+                let builder = crate::$module::Encoder::builder()
+                    .level(self.level)
+                    .output_chunk_size(self.chunk_size);
+
+                let builder = match self.pool {
+                    Some(pool) => builder.pool(pool),
+                    None => builder,
+                };
+
+                Box::new(builder.build(memory))
+            }};
         }
 
         match self.format {
@@ -250,13 +280,15 @@ impl EncoderBuilder {
 /// Configures a decoder for a [`Format`] chosen at runtime.
 ///
 /// Mirrors the per-format builders such as [`gzip::DecoderBuilder`][crate::gzip::DecoderBuilder],
-/// but produces a boxed [`Decoder`] so the format need not be known at compile time.
-#[derive(Debug, Clone, Copy)]
+/// but produces a boxed [`Decoder`] so the format need not be known at compile time. Reach it
+/// through [`Format::decoder`] rather than naming it directly.
+#[derive(Debug, Clone)]
 pub struct DecoderBuilder {
     format: Format,
     limits: DecompressionLimits,
     chunk_size: NonZeroUsize,
     concatenated: Option<bool>,
+    pool: Option<Pool>,
 }
 
 impl DecoderBuilder {
@@ -293,6 +325,16 @@ impl DecoderBuilder {
         self
     }
 
+    /// Recycles engine state through a shared [`Pool`].
+    ///
+    /// The engine is returned when the decoder is dropped. See [`Pool`] for which engines are
+    /// actually recycled.
+    #[must_use]
+    pub fn pool(mut self, pool: Pool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
     /// Builds the decoder, drawing its output buffers from `memory`.
     #[must_use]
     pub fn build(self, memory: impl MemoryShared) -> Box<dyn Decoder> {
@@ -304,6 +346,11 @@ impl DecoderBuilder {
 
                 let builder = match self.concatenated {
                     Some(enabled) => builder.concatenated(enabled),
+                    None => builder,
+                };
+
+                let builder = match self.pool {
+                    Some(pool) => builder.pool(pool),
                     None => builder,
                 };
 
