@@ -40,12 +40,19 @@ pin-project-lite = { version = "0.2.16", optional = true }
 zstd-safe = { version = "7.2.4", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
+alloc_tracker = "0.7.1"
 brotli = { version = "8.0.4", default-features = false, features = ["std"] }
+criterion = { version = "0.8.1", default-features = false }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 futures = { version = "0.3.31", default-features = false, features = ["executor"] }
 futures-core = { version = "0.3.31", default-features = false }
 pin-project-lite = "0.2.16"
 zstd-safe = { version = "7.2.4", default-features = false, features = ["std"] }
+
+[[bench]]
+harness = false
+name = "codec"
+required-features = ["brotli", "deflate", "futures-stream", "gzip", "zlib", "zstd"]
 
 [lints]
 workspace = true
