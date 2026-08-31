@@ -50,8 +50,8 @@ mod sealed {
 /// `Box<dyn Encoder>` can be shared as well as moved between threads.
 ///
 /// ```
-/// use bytesbuf::BytesView;
 /// use bytesbuf::mem::{GlobalPool, MemoryShared};
+/// use bytesbuf::{BytesBuf, BytesView};
 /// use compressed::{Encoder, Output, gzip};
 ///
 /// /// Compresses a payload with whichever encoder it is handed.
@@ -59,12 +59,14 @@ mod sealed {
 ///     encoder.push(input)?;
 ///     encoder.finish();
 ///
-///     let mut parts = Vec::new();
+///     // Appending a view to a `BytesBuf` is zero-copy, so this collects the chunks without
+///     // an intermediate allocation.
+///     let mut collected = BytesBuf::new();
 ///     while let Some(chunk) = encoder.pull()?.into_data() {
-///         parts.push(chunk);
+///         collected.put_bytes(chunk);
 ///     }
 ///
-///     Ok(BytesView::from_views(parts))
+///     Ok(collected.consume_all())
 /// }
 ///
 /// let memory = GlobalPool::new();
@@ -203,6 +205,7 @@ impl Decoder for Box<dyn Decoder> {
 
 #[cfg(all(test, feature = "gzip"))]
 mod tests {
+    use bytesbuf::BytesBuf;
     use bytesbuf::mem::GlobalPool;
 
     use super::*;
@@ -220,21 +223,21 @@ mod tests {
         Encoder::push(&mut *encoder, view(b"driven through the trait")).expect("push succeeds");
         Encoder::finish(&mut *encoder);
 
-        let mut parts = Vec::new();
+        let mut collected = BytesBuf::new();
         while let Some(chunk) = Encoder::pull(&mut *encoder).expect("pull succeeds").into_data() {
-            parts.push(chunk);
+            collected.put_bytes(chunk);
         }
 
         let mut decoder: Box<dyn Decoder> = Box::new(gzip::Decoder::new(memory));
-        Decoder::push(&mut *decoder, BytesView::from_views(parts)).expect("push succeeds");
+        Decoder::push(&mut *decoder, collected.consume_all()).expect("push succeeds");
         Decoder::finish(&mut *decoder);
 
-        let mut plain = Vec::new();
+        let mut plain = BytesBuf::new();
         while let Some(chunk) = Decoder::pull(&mut *decoder).expect("pull succeeds").into_data() {
-            plain.push(chunk);
+            plain.put_bytes(chunk);
         }
 
-        assert_eq!(BytesView::from_views(plain).to_vec(), b"driven through the trait".to_vec());
+        assert_eq!(plain.consume_all().to_vec(), b"driven through the trait".to_vec());
     }
 
     #[test]

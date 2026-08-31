@@ -10,8 +10,8 @@
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
+use bytesbuf::{BytesBuf, BytesView};
 use compressed::{Decoder, DecompressionLimits, Encoder, Format, Level, Output, Pool};
 
 fn view(bytes: &[u8]) -> BytesView {
@@ -31,11 +31,11 @@ fn chunk(size: usize) -> NonZeroUsize {
 /// Drives any encoder to completion, feeding the input in `feed` sized pieces.
 fn encode(encoder: &mut dyn Encoder, input: &BytesView, feed: usize) -> compressed::Result<BytesView> {
     let mut offset = 0;
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
 
     loop {
         match encoder.pull()? {
-            Output::Data(data) => parts.push(data),
+            Output::Data(data) => collected.put_bytes(data),
             Output::Done => break,
             Output::NeedInput => {
                 if offset >= input.len() {
@@ -50,17 +50,17 @@ fn encode(encoder: &mut dyn Encoder, input: &BytesView, feed: usize) -> compress
         }
     }
 
-    Ok(BytesView::from_views(parts))
+    Ok(collected.consume_all())
 }
 
 /// Drives any decoder to completion, feeding the input in `feed` sized pieces.
 fn decode(decoder: &mut dyn Decoder, input: &BytesView, feed: usize) -> compressed::Result<BytesView> {
     let mut offset = 0;
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
 
     loop {
         match decoder.pull()? {
-            Output::Data(data) => parts.push(data),
+            Output::Data(data) => collected.put_bytes(data),
             Output::Done => break,
             Output::NeedInput => {
                 if offset >= input.len() {
@@ -75,7 +75,7 @@ fn decode(decoder: &mut dyn Decoder, input: &BytesView, feed: usize) -> compress
         }
     }
 
-    Ok(BytesView::from_views(parts))
+    Ok(collected.consume_all())
 }
 
 /// Generates the shared contract for one format, using its concrete module so the builders are
@@ -156,23 +156,23 @@ macro_rules! format_contract {
                 encoder.push(view(&data)).expect("push succeeds");
                 Encoder::finish(&mut encoder);
 
-                let mut encoded = Vec::new();
+                let mut encoded = BytesBuf::new();
                 while let Some(piece) = Encoder::pull(&mut encoder).expect("pull succeeds").into_data() {
                     assert!(piece.len() <= 256, "chunk of {} bytes exceeded the bound", piece.len());
-                    encoded.push(piece);
+                    encoded.put_bytes(piece);
                 }
 
                 let mut decoder = $module::Decoder::builder().output_chunk_size(chunk(256)).build(memory);
-                decoder.push(BytesView::from_views(encoded)).expect("push succeeds");
+                decoder.push(encoded.consume_all()).expect("push succeeds");
                 Decoder::finish(&mut decoder);
 
-                let mut plain = Vec::new();
+                let mut plain = BytesBuf::new();
                 while let Some(piece) = Decoder::pull(&mut decoder).expect("pull succeeds").into_data() {
                     assert!(piece.len() <= 256, "chunk of {} bytes exceeded the bound", piece.len());
-                    plain.push(piece);
+                    plain.put_bytes(piece);
                 }
 
-                assert_eq!(BytesView::from_views(plain).to_vec(), data);
+                assert_eq!(plain.consume_all().to_vec(), data);
             }
 
             #[test]
@@ -553,12 +553,12 @@ macro_rules! format_contract {
                     encoder.push(input.clone()).expect("push succeeds");
                     Encoder::finish(encoder);
 
-                    let mut parts = Vec::new();
+                    let mut collected = BytesBuf::new();
                     while let Some(chunk) = Encoder::pull(encoder).expect("pull succeeds").into_data() {
-                        parts.push(chunk);
+                        collected.put_bytes(chunk);
                     }
 
-                    BytesView::from_views(parts).to_vec()
+                    collected.consume_all().to_vec()
                 }
 
                 fn build(pool: Option<&Pool>) -> $module::Encoder {
@@ -586,13 +586,13 @@ macro_rules! format_contract {
                 Encoder::finish(&mut second);
 
                 for (label, encoder) in [("first", &mut first), ("second", &mut second)] {
-                    let mut parts = Vec::new();
+                    let mut collected = BytesBuf::new();
                     while let Some(chunk) = Encoder::pull(encoder).expect("pull succeeds").into_data() {
-                        parts.push(chunk);
+                        collected.put_bytes(chunk);
                     }
 
                     assert_eq!(
-                        BytesView::from_views(parts).to_vec(),
+                        collected.consume_all().to_vec(),
                         baseline,
                         "{label} encoder was corrupted by sharing"
                     );

@@ -337,14 +337,7 @@ macro_rules! define_format {
             encoder.push(input)?;
             encoder.finish();
 
-            // After `finish` the encoder never asks for more input, so `into_data` returning
-            // `None` means the stream ended.
-            let mut parts = Vec::new();
-            while let Some(chunk) = encoder.pull()?.into_data() {
-                parts.push(chunk);
-            }
-
-            Ok(BytesView::from_views(parts))
+            $crate::format::drain(|| encoder.pull())
         }
 
         #[doc = concat!("Decompresses a complete ", $name, " stream that is already in memory.")]
@@ -360,14 +353,7 @@ macro_rules! define_format {
             decoder.push(input)?;
             decoder.finish();
 
-            // After `finish` the decoder never asks for more input: it either produces data, ends,
-            // or reports truncation as an error.
-            let mut parts = Vec::new();
-            while let Some(chunk) = decoder.pull()?.into_data() {
-                parts.push(chunk);
-            }
-
-            Ok(BytesView::from_views(parts))
+            $crate::format::drain(|| decoder.pull())
         }
     };
 }

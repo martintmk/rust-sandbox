@@ -16,8 +16,8 @@ pub(crate) mod macros;
 use std::cmp::Reverse;
 use std::num::NonZeroUsize;
 
-use bytesbuf::BytesView;
 use bytesbuf::mem::MemoryShared;
+use bytesbuf::{BytesBuf, BytesView};
 
 use crate::codec::{Decoder, Encoder};
 use crate::engine::DEFAULT_CHUNK_SIZE;
@@ -351,15 +351,19 @@ const fn default_chunk_size() -> NonZeroUsize {
 }
 
 /// Collects every chunk a finished codec produces.
-fn drain(mut pull: impl FnMut() -> Result<crate::Output>) -> Result<BytesView> {
+pub(crate) fn drain(mut pull: impl FnMut() -> Result<crate::Output>) -> Result<BytesView> {
+    // A `BytesBuf` is the right accumulator here rather than a `Vec<BytesView>`: appending a view
+    // to it is zero-copy, since each view carries its own backing memory, so this collects the
+    // chunks without the intermediate heap allocation a growing `Vec` would need.
+    let mut collected = BytesBuf::new();
+
     // After finishing, the codec never asks for more input, so `into_data` returning `None` means
     // the stream ended.
-    let mut parts = Vec::new();
     while let Some(chunk) = pull()?.into_data() {
-        parts.push(chunk);
+        collected.put_bytes(chunk);
     }
 
-    Ok(BytesView::from_views(parts))
+    Ok(collected.consume_all())
 }
 
 /// Configures an encoder for a [`Format`] chosen at runtime.

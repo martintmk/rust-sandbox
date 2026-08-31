@@ -9,8 +9,8 @@
 
 use std::num::NonZeroUsize;
 
-use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
+use bytesbuf::{BytesBuf, BytesView};
 use compressed::{DecompressionLimits, Output, gzip};
 
 /// The payload behind `tests/fixtures/system_gzip.gz`, compressed by the system `gzip -9 -n`.
@@ -36,11 +36,11 @@ fn chunk(size: usize) -> NonZeroUsize {
 /// Drives a codec to completion over an input delivered in `feed` sized pieces.
 fn drive_decoder(mut decoder: gzip::Decoder, input: &BytesView, feed: usize) -> compressed::Result<BytesView> {
     let mut offset = 0;
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
 
     loop {
         match decoder.pull()? {
-            Output::Data(data) => parts.push(data),
+            Output::Data(data) => collected.put_bytes(data),
             Output::Done => break,
             Output::NeedInput => {
                 if offset >= input.len() {
@@ -55,7 +55,7 @@ fn drive_decoder(mut decoder: gzip::Decoder, input: &BytesView, feed: usize) -> 
         }
     }
 
-    Ok(BytesView::from_views(parts))
+    Ok(collected.consume_all())
 }
 
 #[test]

@@ -42,8 +42,8 @@
 //! holds more than one pending input view plus one output chunk:
 //!
 //! ```
-//! use bytesbuf::BytesView;
 //! use bytesbuf::mem::GlobalPool;
+//! use bytesbuf::{BytesBuf, BytesView};
 //! use compressed::{Output, gzip};
 //!
 //! # let memory = GlobalPool::new();
@@ -51,11 +51,11 @@
 //! #     BytesView::copied_from_slice(b"streamed", &memory), memory.clone())?];
 //! let mut decoder = gzip::Decoder::new(memory);
 //! let mut chunks = source.into_iter();
-//! let mut plain = Vec::new();
+//! let mut plain = BytesBuf::new();
 //!
 //! loop {
 //!     match decoder.pull()? {
-//!         Output::Data(data) => plain.push(data),
+//!         Output::Data(data) => plain.put_bytes(data),
 //!         Output::NeedInput => match chunks.next() {
 //!             Some(chunk) => decoder.push(chunk)?,
 //!             None => decoder.finish(),
@@ -64,7 +64,7 @@
 //!     }
 //! }
 //!
-//! assert_eq!(BytesView::from_views(plain).to_vec(), b"streamed".to_vec());
+//! assert_eq!(plain.consume_all().to_vec(), b"streamed".to_vec());
 //! # Ok::<(), compressed::Error>(())
 //! ```
 //!

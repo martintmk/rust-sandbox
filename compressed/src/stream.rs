@@ -334,6 +334,7 @@ where
 
 #[cfg(all(test, feature = "gzip"))]
 mod tests {
+    use bytesbuf::BytesBuf;
     use bytesbuf::mem::GlobalPool;
     use futures::executor::block_on;
     use futures::{StreamExt, stream};
@@ -352,11 +353,11 @@ mod tests {
     fn collect(stream: impl Stream<Item = Result<BytesView>>) -> Result<BytesView> {
         block_on(async {
             let chunks: Vec<_> = stream.collect().await;
-            let mut parts = Vec::with_capacity(chunks.len());
+            let mut collected = BytesBuf::new();
             for chunk in chunks {
-                parts.push(chunk?);
+                collected.put_bytes(chunk?);
             }
-            Ok(BytesView::from_views(parts))
+            Ok(collected.consume_all())
         })
     }
 

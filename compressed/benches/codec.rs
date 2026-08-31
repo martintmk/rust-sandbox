@@ -20,8 +20,8 @@ use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use alloc_tracker::{Allocator, Operation, Session};
-use bytesbuf::BytesView;
 use bytesbuf::mem::GlobalPool;
+use bytesbuf::{BytesBuf, BytesView};
 use compressed::brotli::{self, WindowSize};
 use compressed::{Format, Level, Pool};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -103,12 +103,12 @@ fn compress(
     encoder.push(input.clone()).expect("push succeeds");
     encoder.finish();
 
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
     while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-        parts.push(data);
+        collected.put_bytes(data);
     }
 
-    BytesView::from_views(parts)
+    collected.consume_all()
 }
 
 fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &GlobalPool) -> BytesView {
@@ -122,12 +122,12 @@ fn decompress(format: Format, pool: Option<&Pool>, input: &BytesView, memory: &G
     decoder.push(input.clone()).expect("push succeeds");
     decoder.finish();
 
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
     while let Some(data) = decoder.pull().expect("pull succeeds").into_data() {
-        parts.push(data);
+        collected.put_bytes(data);
     }
 
-    BytesView::from_views(parts)
+    collected.consume_all()
 }
 
 /// Compresses with an explicit brotli window, which the runtime `Format` builder cannot express.
@@ -136,12 +136,12 @@ fn encode_brotli(window: WindowSize, input: &BytesView, memory: &GlobalPool) -> 
     encoder.push(input.clone()).expect("push succeeds");
     encoder.finish();
 
-    let mut parts = Vec::new();
+    let mut collected = BytesBuf::new();
     while let Some(data) = encoder.pull().expect("pull succeeds").into_data() {
-        parts.push(data);
+        collected.put_bytes(data);
     }
 
-    BytesView::from_views(parts)
+    collected.consume_all()
 }
 
 /// Runs `body` under Criterion while attributing its allocations to `operation`.
