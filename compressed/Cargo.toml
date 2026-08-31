@@ -1,0 +1,39 @@
+# Licensed under the MIT License.
+
+[package]
+name = "compressed"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming compression and decompression over bytesbuf byte sequences"
+readme = "README.md"
+keywords = ["compression", "gzip", "streaming", "zero-copy"]
+categories = ["compression", "network-programming"]
+
+[package.metadata.coverage-gate]
+min-lines-percent = 100
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.cargo_check_external_types]
+allowed_external_types = ["bytesbuf::*", "futures_core::stream::Stream"]
+
+[features]
+default = []
+futures-stream = ["dep:futures-core", "dep:pin-project-lite"]
+
+[dependencies]
+bytesbuf = { version = "0.9.0", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+futures-core = { version = "0.3.31", default-features = false, optional = true }
+pin-project-lite = { version = "0.2.16", optional = true }
+
+[dev-dependencies]
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
+futures-core = { version = "0.3.31", default-features = false }
+pin-project-lite = "0.2.16"
+
+[lints]
+workspace = true
