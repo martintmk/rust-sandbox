@@ -50,9 +50,9 @@ define_format! {
     decoder_codec = ZstdDecompress,
     decoder_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decoder = |limits, concatenated, (), pool| ZstdDecompress::new(limits, concatenated, pool),
-    concatenated_default = true,
-    concatenated_doc = "Sets whether concatenated zstd frames decode as one logical stream.\n\nEnabled by default, matching the `zstd` command line tool.",
+    new_decoder = |limits, multi_stream, (), pool| ZstdDecompress::new(limits, multi_stream, pool),
+    multi_stream_default = true,
+    multi_stream_doc = "Sets whether concatenated zstd frames decode as one logical stream.\n\nEnabled by default, matching the `zstd` command line tool.",
 }
 
 /// A level on zstd's own scale, for reaching settings the portable [`Level`] does not cover.

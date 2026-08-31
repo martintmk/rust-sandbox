@@ -51,9 +51,9 @@ define_format! {
     decoder_codec = BrotliDecompress,
     decoder_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decoder = |limits, concatenated, (), _pool| BrotliDecompress::new(limits, concatenated),
-    concatenated_default = false,
-    concatenated_doc = "Sets whether consecutive brotli streams decode as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
+    new_decoder = |limits, multi_stream, (), _pool| BrotliDecompress::new(limits, multi_stream),
+    multi_stream_default = false,
+    multi_stream_doc = "Sets whether consecutive brotli streams decode as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
 }
 
 /// The kind of data brotli should tune its model for.

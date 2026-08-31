@@ -121,16 +121,16 @@ impl Codec for BrotliCompress {
 pub(crate) struct BrotliDecompress {
     state: BrotliState<HeapAlloc<u8>, HeapAlloc<u32>, HeapAlloc<HuffmanCode>>,
     limits: FormatLimits,
-    concatenated: bool,
+    multi_stream: bool,
     total_out: usize,
 }
 
 impl BrotliDecompress {
-    pub(crate) fn new(limits: FormatLimits, concatenated: bool) -> Self {
+    pub(crate) fn new(limits: FormatLimits, multi_stream: bool) -> Self {
         Self {
             state: Self::state(),
             limits,
-            concatenated,
+            multi_stream,
             total_out: 0,
         }
     }
@@ -144,7 +144,7 @@ impl std::fmt::Debug for BrotliDecompress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrotliDecompress")
             .field("limits", &self.limits)
-            .field("concatenated", &self.concatenated)
+            .field("multi_stream", &self.multi_stream)
             .finish_non_exhaustive()
     }
 }
@@ -180,7 +180,7 @@ impl Codec for BrotliDecompress {
     }
 
     fn stream_ended(&mut self, more_input_available: bool) -> bool {
-        if !self.concatenated || !more_input_available {
+        if !self.multi_stream || !more_input_available {
             return true;
         }
 

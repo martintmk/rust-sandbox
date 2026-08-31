@@ -38,7 +38,7 @@ define_format! {
     decoder_codec = FlateDecompress,
     decoder_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,
-    new_decoder = |limits, concatenated, (), pool| FlateDecompress::new(Wrapper::Gzip, limits, concatenated, pool),
-    concatenated_default = true,
-    concatenated_doc = "Sets whether concatenated gzip members decode as one logical stream.\n\nEnabled by default, matching `gzip(1)`.",
+    new_decoder = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Gzip, limits, multi_stream, pool),
+    multi_stream_default = true,
+    multi_stream_doc = "Sets whether concatenated gzip members decode as one logical stream.\n\nEnabled by default, matching `gzip(1)`.",
 }

@@ -91,14 +91,14 @@ pub(crate) struct FlateDecompress {
     decompress: Option<Decompress>,
     wrapper: Wrapper,
     limits: FormatLimits,
-    concatenated: bool,
+    multi_stream: bool,
     /// Only present where some container's decompressor can actually be recycled.
     #[cfg(any(feature = "deflate", feature = "zlib"))]
     recycle: Option<Pool>,
 }
 
 impl FlateDecompress {
-    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, concatenated: bool, pool: Option<Pool>) -> Self {
+    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, multi_stream: bool, pool: Option<Pool>) -> Self {
         // Only containers whose reset restores their framing can be recycled.
         let pool = pool.filter(|_| wrapper.reset_restores_framing());
         let decompress = Self::checkout(wrapper, pool.as_ref());
@@ -110,7 +110,7 @@ impl FlateDecompress {
             decompress: Some(decompress),
             wrapper,
             limits,
-            concatenated,
+            multi_stream,
             #[cfg(any(feature = "deflate", feature = "zlib"))]
             recycle: pool,
         }
@@ -170,7 +170,7 @@ impl Codec for FlateDecompress {
     }
 
     fn stream_ended(&mut self, more_input_available: bool) -> bool {
-        if !self.concatenated || !more_input_available {
+        if !self.multi_stream || !more_input_available {
             return true;
         }
 

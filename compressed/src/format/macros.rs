@@ -34,8 +34,8 @@ macro_rules! define_format {
         decoder_options = $dec_options:ty,
         default_limits = $default_limits:expr,
         new_decoder = $new_decoder:expr,
-        concatenated_default = $concatenated_default:expr,
-        concatenated_doc = $concatenated_doc:literal,
+        multi_stream_default = $multi_stream_default:expr,
+        multi_stream_doc = $multi_stream_doc:literal,
     ) => {
         use std::num::NonZeroUsize;
 
@@ -254,7 +254,7 @@ macro_rules! define_format {
         pub struct DecoderBuilder {
             limits: DecompressionLimits,
             chunk_size: NonZeroUsize,
-            concatenated: bool,
+            multi_stream: bool,
             pool: Option<$crate::Pool>,
             /// Settings that only this format has. `()` for formats with none.
             options: $dec_options,
@@ -277,15 +277,15 @@ macro_rules! define_format {
                 self
             }
 
-            #[doc = $concatenated_doc]
+            #[doc = $multi_stream_doc]
             ///
             /// When enabled, any bytes following a complete stream must themselves form another
             /// valid stream; trailing padding is reported as corrupt data. Disable this to stop
             /// after the first stream and ignore whatever follows, using
             /// [`Decoder::total_in`] to find where it ended.
             #[must_use]
-            pub const fn concatenated(mut self, enabled: bool) -> Self {
-                self.concatenated = enabled;
+            pub const fn multi_stream(mut self, enabled: bool) -> Self {
+                self.multi_stream = enabled;
                 self
             }
 
@@ -307,7 +307,7 @@ macro_rules! define_format {
                     pump: Pump::new(memory, self.chunk_size),
                     codec: $new_decoder(
                         self.limits.resolve($default_limits),
-                        self.concatenated,
+                        self.multi_stream,
                         self.options,
                         self.pool,
                     ),
@@ -320,7 +320,7 @@ macro_rules! define_format {
                 Self {
                     limits: DecompressionLimits::new(),
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
-                    concatenated: $concatenated_default,
+                    multi_stream: $multi_stream_default,
                     pool: None,
                     options: <$dec_options>::default(),
                 }

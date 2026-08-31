@@ -256,7 +256,7 @@ impl Format {
             format: self,
             limits: DecompressionLimits::new(),
             chunk_size: default_chunk_size(),
-            concatenated: None,
+            multi_stream: None,
             pool: None,
         }
     }
@@ -429,7 +429,7 @@ pub struct DecoderBuilder {
     format: Format,
     limits: DecompressionLimits,
     chunk_size: NonZeroUsize,
-    concatenated: Option<bool>,
+    multi_stream: Option<bool>,
     pool: Option<Pool>,
 }
 
@@ -467,8 +467,8 @@ impl DecoderBuilder {
     /// When disabled they are silently ignored, which means the same appended bytes are rejected
     /// under the formats that default to enabled and accepted under those that do not.
     #[must_use]
-    pub const fn concatenated(mut self, enabled: bool) -> Self {
-        self.concatenated = Some(enabled);
+    pub const fn multi_stream(mut self, enabled: bool) -> Self {
+        self.multi_stream = Some(enabled);
         self
     }
 
@@ -491,8 +491,8 @@ impl DecoderBuilder {
                     .limits(self.limits)
                     .output_chunk_size(self.chunk_size);
 
-                let builder = match self.concatenated {
-                    Some(enabled) => builder.concatenated(enabled),
+                let builder = match self.multi_stream {
+                    Some(enabled) => builder.multi_stream(enabled),
                     None => builder,
                 };
 
@@ -783,30 +783,49 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gzip")]
     #[test]
-    fn the_decoder_builder_keeps_each_formats_concatenation_default() {
-        // Gzip decodes concatenated members by default; the others stop at the first stream. The
-        // runtime builder must preserve that rather than flattening every format to one behaviour.
+    fn multi_stream_governs_every_format() {
+        // The generic half of the contract: whatever the format, setting this explicitly decides
+        // whether a second stream is decoded or ignored.
         let memory = GlobalPool::new();
         let payload = b"member ".repeat(50);
 
-        let encoded = Format::Gzip.compress(view(&payload), memory.clone()).expect("compress");
-        let joined = BytesView::from_views([encoded.clone(), encoded]);
+        for &format in Format::ALL {
+            let encoded = format.compress(view(&payload), memory.clone()).expect("compress");
+            let joined = BytesView::from_views([encoded.clone(), encoded]);
 
-        let joined_len = Format::Gzip.decompress(joined.clone(), memory.clone()).expect("decompress").len();
-        assert_eq!(joined_len, payload.len() * 2, "gzip should join members by default");
+            let joined_len = decode_len(format.decoder().multi_stream(true).build(memory.clone()), joined.clone());
+            assert_eq!(joined_len, payload.len() * 2, "{format:?} should join with multi_stream(true)");
 
-        let mut decoder = Format::Gzip.decoder().concatenated(false).build(memory);
-        decoder.push(joined).expect("push succeeds");
-        decoder.finish();
-
-        let mut total = 0;
-        while let Some(chunk) = decoder.pull().expect("pull succeeds").into_data() {
-            total += chunk.len();
+            let single_len = decode_len(format.decoder().multi_stream(false).build(memory.clone()), joined);
+            assert_eq!(single_len, payload.len(), "{format:?} should stop with multi_stream(false)");
         }
+    }
 
-        assert_eq!(total, payload.len(), "disabling concatenation should stop after one member");
+    #[test]
+    fn each_format_keeps_its_own_multi_stream_default() {
+        // The format-specific half: the runtime builder must preserve each format's own default
+        // rather than flattening every format to one behaviour. Gzip and zstd join, matching
+        // `gzip(1)` and the `zstd` tool; the rest stop at the first stream.
+        let memory = GlobalPool::new();
+        let payload = b"member ".repeat(50);
+
+        for &format in Format::ALL {
+            // Matching the variant by name keeps this free of the cfg gates the variants carry.
+            let joins_by_default = matches!(format!("{format:?}").as_str(), "Gzip" | "Zstd");
+
+            let encoded = format.compress(view(&payload), memory.clone()).expect("compress");
+            let joined = BytesView::from_views([encoded.clone(), encoded]);
+
+            let len = decode_len(format.decoder().build(memory.clone()), joined);
+            let expected = if joins_by_default { payload.len() * 2 } else { payload.len() };
+
+            assert_eq!(len, expected, "{format:?} did not keep its documented default");
+        }
+    }
+
+    fn decode_len(decoder: Box<dyn Decoder>, input: BytesView) -> usize {
+        decoder.decode(input).expect("decompression succeeds").len()
     }
 
     #[test]

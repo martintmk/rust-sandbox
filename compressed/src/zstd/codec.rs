@@ -130,18 +130,18 @@ pub(crate) struct ZstdDecompress {
     /// `Some` until the context is handed back in `drop`.
     context: Option<DCtx<'static>>,
     limits: FormatLimits,
-    concatenated: bool,
+    multi_stream: bool,
     recycle: Option<Pool>,
 }
 
 impl ZstdDecompress {
-    pub(crate) fn new(limits: FormatLimits, concatenated: bool, pool: Option<Pool>) -> Self {
+    pub(crate) fn new(limits: FormatLimits, multi_stream: bool, pool: Option<Pool>) -> Self {
         let context = pool.as_ref().and_then(Pool::take_zstd_decompressor).unwrap_or_else(DCtx::create);
 
         Self {
             context: Some(context),
             limits,
-            concatenated,
+            multi_stream,
             recycle: pool,
         }
     }
@@ -155,7 +155,7 @@ impl std::fmt::Debug for ZstdDecompress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ZstdDecompress")
             .field("limits", &self.limits)
-            .field("concatenated", &self.concatenated)
+            .field("multi_stream", &self.multi_stream)
             .finish_non_exhaustive()
     }
 }
@@ -188,7 +188,7 @@ impl Codec for ZstdDecompress {
     }
 
     fn stream_ended(&mut self, more_input_available: bool) -> bool {
-        if !self.concatenated || !more_input_available {
+        if !self.multi_stream || !more_input_available {
             return true;
         }
 
