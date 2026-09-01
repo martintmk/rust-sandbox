@@ -41,10 +41,11 @@ fn drive_decompressor(mut decompressor: gzip::Decompressor, input: &BytesView, f
     loop {
         match decompressor.pull()? {
             Output::Data(data) => collected.put_bytes(data),
+            Output::Progress => {}
             Output::Done => break,
             Output::NeedInput => {
                 if offset >= input.len() {
-                    decompressor.finish();
+                    decompressor.end_input();
                     continue;
                 }
 
@@ -92,7 +93,7 @@ fn our_framing_matches_an_independent_gzip_reader() {
 #[test]
 fn round_trips_a_multi_segment_view() {
     // Regression guard. `BytesView` is a chain of segments, and the engine is fed one segment at a
-    // time. Signalling "finish" on the first segment rather than the last silently truncated the
+    // time. Signalling end of input on the first segment rather than the last silently truncated the
     // stream at the first segment boundary, which single-segment tests could not catch.
     // Tiny segments are quadratic to build, so scale the payload down as the segment shrinks.
     for (segment, repeats) in [(1, 200), (7, 500), (64, 5_000), (1024, 20_000), (65_536, 20_000)] {
@@ -127,16 +128,23 @@ fn streams_a_large_payload_with_a_bounded_working_set() {
 
     let mut compressor = gzip::Compressor::builder().output_chunk_size(chunk(CHUNK)).build(GlobalPool::new());
     compressor.push(fragmented(&payload, 4096)).expect("push succeeds");
-    compressor.finish();
+    compressor.end_input();
 
     let mut compressed = Vec::new();
-    while let Some(piece) = compressor.pull().expect("pull succeeds").into_data() {
-        assert!(
-            piece.len() <= CHUNK,
-            "chunk of {} bytes exceeded the {CHUNK} byte bound",
-            piece.len()
-        );
-        compressed.push(piece);
+    loop {
+        match compressor.pull().expect("pull succeeds") {
+            Output::Data(piece) => {
+                assert!(
+                    piece.len() <= CHUNK,
+                    "chunk of {} bytes exceeded the {CHUNK} byte bound",
+                    piece.len()
+                );
+                compressed.push(piece);
+            }
+            Output::Progress => {}
+            Output::NeedInput => panic!("compressor requested input after end"),
+            Output::Done => break,
+        }
     }
 
     let gz = BytesView::from_views(compressed);
@@ -166,11 +174,11 @@ fn rejects_a_bomb_before_materialising_it() {
         .limits(DecompressionLimits::new().with_max_output_len(1024 * 1024))
         .build(GlobalPool::new());
     decompressor.push(bomb).expect("push succeeds");
-    decompressor.finish();
+    decompressor.end_input();
 
     let error = loop {
         match decompressor.pull() {
-            Ok(Output::Data(_)) => {}
+            Ok(Output::Data(_) | Output::Progress) => {}
             Ok(_) => panic!("the bomb decompressed fully instead of being rejected"),
             Err(error) => break error,
         }

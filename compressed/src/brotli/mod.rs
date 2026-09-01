@@ -51,7 +51,9 @@ define_format! {
     decompressor_codec = BrotliDecompress,
     decompressor_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decompressor = |limits, multi_stream, (), _pool| BrotliDecompress::new(limits, multi_stream),
+    new_decompressor = |limits, multi_stream, trailing_data, (), _pool| {
+        BrotliDecompress::new(limits, multi_stream, trailing_data)
+    },
     multi_stream_default = false,
     multi_stream_doc = "Sets whether consecutive brotli streams decompress as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
 }
@@ -71,6 +73,62 @@ pub enum Mode {
     Text,
     /// A WOFF 2.0 font.
     Font,
+}
+
+/// A compression quality on brotli's native `0..=11` scale.
+///
+/// Quality zero is brotli's fastest mode; it still compresses. The portable [`Level`] scale maps
+/// onto this range, while this type makes every native quality reachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Quality(u8);
+
+impl Quality {
+    /// Brotli's fastest quality.
+    pub const MIN: Self = Self(0);
+
+    /// Brotli's native default.
+    pub const DEFAULT: Self = Self(11);
+
+    /// Brotli's strongest quality.
+    pub const MAX: Self = Self(11);
+
+    /// Creates a native brotli quality.
+    #[must_use]
+    pub const fn new(quality: u8) -> Option<Self> {
+        if quality <= Self::MAX.0 { Some(Self(quality)) } else { None }
+    }
+
+    /// Returns the native brotli quality.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for Quality {
+    type Error = crate::Error;
+
+    fn try_from(quality: u8) -> core::result::Result<Self, Self::Error> {
+        Self::new(quality).ok_or_else(|| {
+            crate::Error::invalid_configuration(format!(
+                "brotli quality {quality} is out of range; expected {}..={}",
+                Self::MIN.get(),
+                Self::MAX.get()
+            ))
+        })
+    }
+}
+
+impl From<Quality> for u8 {
+    fn from(quality: Quality) -> Self {
+        quality.get()
+    }
 }
 
 /// The base-2 logarithm of brotli's sliding window, in bytes.
@@ -151,6 +209,7 @@ impl From<WindowSize> for u8 {
 /// Held by the generated [`CompressorBuilder`] and populated by the setters below.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CompressorOptions {
+    pub(crate) quality: Option<Quality>,
     pub(crate) mode: Mode,
     pub(crate) window_size: WindowSize,
 }
@@ -162,17 +221,18 @@ pub(crate) struct CompressorOptions {
 /// and are also reachable through [`Format::compressor`][crate::format::Format::compressor]. These are not: a
 /// runtime builder that might produce any format cannot honour a setting only brotli has, so
 /// reach for them through this concrete builder and box the result if you need a
-/// compressing [`Compression`][crate::Compression] trait object.
+/// [`Compressing`][crate::Compressing] trait object.
 ///
 /// # Examples
 ///
 /// ```
 /// use bytesbuf::mem::GlobalPool;
-/// use compressed::brotli::{Mode, WindowSize};
-/// use compressed::{Compress, Compression, brotli};
+/// use compressed::brotli::{Mode, Quality, WindowSize};
+/// use compressed::{Compressing, brotli};
 ///
-/// let compressor: Box<dyn Compression<Mode = Compress>> = Box::new(
+/// let compressor: Box<dyn Compressing> = Box::new(
 ///     brotli::Compressor::builder()
+///         .quality(Quality::new(8).expect("8 is in range"))
 ///         .mode(Mode::Text)
 ///         .window_size(WindowSize::new(20).expect("20 is in range"))
 ///         .build(GlobalPool::new()),
@@ -180,6 +240,13 @@ pub(crate) struct CompressorOptions {
 /// # let _ = compressor;
 /// ```
 impl CompressorBuilder {
+    /// Sets brotli's native quality, overriding any portable [`Level`].
+    #[must_use]
+    pub const fn quality(mut self, quality: Quality) -> Self {
+        self.options.quality = Some(quality);
+        self
+    }
+
     /// Tunes the entropy model for a particular kind of input.
     #[must_use]
     pub const fn mode(mut self, mode: Mode) -> Self {
@@ -189,11 +256,25 @@ impl CompressorBuilder {
 
     /// Sets the sliding window size.
     ///
-    /// Every decompressor reading the stream must allocate a window this large, so raising it is a cost
-    /// paid by the reader as well as the writer.
+    /// A larger declared window can increase decompressor memory, so raising it is a cost paid by
+    /// the reader as well as the writer.
     #[must_use]
     pub const fn window_size(mut self, window_size: WindowSize) -> Self {
         self.options.window_size = window_size;
         self
+    }
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+
+    #[test]
+    fn every_native_quality_is_representable() {
+        for quality in Quality::MIN.get()..=Quality::MAX.get() {
+            assert_eq!(Quality::new(quality).map(Quality::get), Some(quality));
+        }
+
+        assert_eq!(Quality::new(12), None);
     }
 }

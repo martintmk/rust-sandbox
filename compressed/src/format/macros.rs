@@ -2,19 +2,18 @@
 
 //! The macro that generates each format module's public surface.
 //!
-//! Every format exposes the same four types and two functions, differing only in which codec they
+//! Every format exposes the same four types and three functions, differing only in which codec they
 //! drive and in their documentation. Generating them keeps the four modules honest — a change to
 //! the contract cannot drift between formats — without collapsing them into one type that would
 //! lose the compile-time distinction between, say, a gzip and a brotli compressor.
 //!
 //! # Format-specific settings
 //!
-//! Formats are not actually identical: gzip carries optional header metadata, brotli has a window
-//! size and a content mode, zlib takes a preset dictionary. The macro handles that with an
-//! `compressor_options` / `decompressor_options` type, defaulted and threaded through to the codec. A
-//! format with no extra settings passes `()`; a format that has some declares its own options
-//! struct and writes the setters by hand in its own module, right next to the documentation that
-//! explains them.
+//! Formats are not actually identical: brotli has native quality, window and content-mode settings,
+//! while zstd has native levels and a decompressor window limit. The macro handles that with a
+//! `compressor_options` / `decompressor_options` type, defaulted and threaded through to the codec.
+//! A format with no extra settings passes `()`; a format that has some declares its own options
+//! struct and writes the setters by hand in its own module.
 //!
 //! Only the portable settings appear on the runtime [`Format`][crate::Format] builders, because a
 //! builder that might produce any format cannot honour a setting that only one of them has. Code
@@ -22,8 +21,8 @@
 //! concrete builder, and boxes the result — which works because a boxed [`Compression`][crate::Compression]
 //! is itself a `Compression`.
 
-/// Generates `Compressor`, `CompressorBuilder`, `Decompressor`, `DecompressorBuilder`, `compress` and `decompress`
-/// for one format.
+/// Generates `Compressor`, `CompressorBuilder`, `Decompressor`, `DecompressorBuilder`, `compress`,
+/// `decompress`, and `decompress_with_limits` for one format.
 macro_rules! define_format {
     (
         name = $name:literal,
@@ -41,6 +40,7 @@ macro_rules! define_format {
 
         use bytesbuf::BytesView;
         use bytesbuf::mem::MemoryShared;
+        use $crate::TrailingData;
         // Anonymous because the import exists only to bring the trait's provided methods into scope.
         use $crate::compression::Compression as _;
         use $crate::engine::{DEFAULT_CHUNK_SIZE, Pump};
@@ -52,7 +52,7 @@ macro_rules! define_format {
         #[doc = concat!("Compresses a stream of byte sequences into ", $name, ".")]
         ///
         /// A push/pull state machine: supply input with [`Compressor::push`], take output with
-        /// [`Compressor::pull`], and call [`Compressor::finish`] when there is no more input. Each pull
+        /// [`Compressor::pull`], and call [`Compressor::end_input`] when there is no more input. Each pull
         /// returns at most one bounded chunk, so a stream of any length can be compressed with a
         /// bounded working set.
         #[derive(Debug)]
@@ -79,18 +79,31 @@ macro_rules! define_format {
             /// # Errors
             ///
             /// Returns an [`Error::is_invalid_state`][crate::Error::is_invalid_state] error if
-            /// input is still pending from a previous push, or if [`Compressor::finish`] has already
+            /// input is still pending from a previous push, or if [`Compressor::end_input`] has already
             /// been called. Drain pending input with [`Compressor::pull`] until it reports
             /// [`Output::NeedInput`] first.
             pub fn push(&mut self, input: BytesView) -> Result<()> {
                 self.pump.push(input)
             }
 
+            /// Requests a resumable flush of all input supplied so far.
+            ///
+            /// Drain [`Compressor::pull`] until it reports [`Output::NeedInput`] before pushing more
+            /// input. Flushing can reduce the compression ratio.
+            ///
+            /// # Errors
+            ///
+            /// Returns an invalid-state error after end of input or a previous operation failure.
+            pub fn flush(&mut self) -> Result<()> {
+                self.pump.flush()
+            }
+
             /// Signals that no further input will be supplied.
             ///
-            /// Calling this more than once has no additional effect.
-            pub fn finish(&mut self) {
-                self.pump.finish();
+            /// Calling this more than once has no additional effect. Continue pulling until
+            /// [`Output::Done`] to finish writing the compressed stream.
+            pub fn end_input(&mut self) {
+                self.pump.end_input();
             }
 
             /// Produces the next chunk of compressed output.
@@ -185,6 +198,9 @@ macro_rules! define_format {
         /// Compressed data can expand by orders of magnitude, so a decompressor pointed at untrusted
         /// input is a memory-exhaustion vector. This format's own default bounds apply unless
         /// [`DecompressorBuilder::limits`] overrides them.
+        ///
+        /// Output is provisional until [`Output::Done`], because a checksum or trailer can reject
+        /// the stream after earlier chunks have been returned.
         #[derive(Debug)]
         pub struct Decompressor {
             pump: Pump,
@@ -208,7 +224,7 @@ macro_rules! define_format {
             /// # Errors
             ///
             /// Returns an [`Error::is_invalid_state`][crate::Error::is_invalid_state] error if
-            /// input is still pending from a previous push, or if [`Decompressor::finish`] has already
+            /// input is still pending from a previous push, or if [`Decompressor::end_input`] has already
             /// been called.
             pub fn push(&mut self, input: BytesView) -> Result<()> {
                 self.pump.push(input)
@@ -218,8 +234,8 @@ macro_rules! define_format {
             ///
             /// If the input ended part-way through a stream, the next [`Decompressor::pull`] reports
             /// [`Error::is_unexpected_end_of_stream`][crate::Error::is_unexpected_end_of_stream].
-            pub fn finish(&mut self) {
-                self.pump.finish();
+            pub fn end_input(&mut self) {
+                self.pump.end_input();
             }
 
             /// Produces the next chunk of decompressed output.
@@ -246,6 +262,15 @@ macro_rules! define_format {
             pub fn total_out(&self) -> u64 {
                 self.pump.total_out()
             }
+
+            /// Takes bytes already buffered after a completed single stream.
+            ///
+            /// # Errors
+            ///
+            /// Returns an invalid-state error until the decompressor reports [`Output::Done`].
+            pub fn take_remainder(&mut self) -> Result<BytesView> {
+                self.pump.take_remainder()
+            }
         }
 
         /// Configures a [`Decompressor`].
@@ -254,6 +279,7 @@ macro_rules! define_format {
             limits: DecompressionLimits,
             chunk_size: NonZeroUsize,
             multi_stream: bool,
+            trailing_data: TrailingData,
             pool: Option<$crate::Pool>,
             /// Settings that only this format has. `()` for formats with none.
             options: $decompressor_options,
@@ -280,11 +306,21 @@ macro_rules! define_format {
             ///
             /// When enabled, any bytes following a complete stream must themselves form another
             /// valid stream; trailing padding is reported as corrupt data. Disable this to stop
-            /// after the first stream and ignore whatever follows, using
-            /// [`Decompressor::total_in`] to find where it ended.
+            /// after the first stream and preserve already-buffered trailing bytes for
+            /// [`Decompressor::take_remainder`].
             #[must_use]
             pub const fn multi_stream(mut self, enabled: bool) -> Self {
                 self.multi_stream = enabled;
+                self
+            }
+
+            /// Sets how a single-stream decompressor handles bytes after the compressed stream.
+            ///
+            /// In multi-stream mode, subsequent bytes are interpreted as another compressed
+            /// stream regardless of this setting.
+            #[must_use]
+            pub const fn trailing_data(mut self, trailing_data: TrailingData) -> Self {
+                self.trailing_data = trailing_data;
                 self
             }
 
@@ -307,6 +343,7 @@ macro_rules! define_format {
                     codec: $new_decompressor(
                         self.limits.resolve($default_limits),
                         self.multi_stream,
+                        self.trailing_data,
                         self.options,
                         self.pool,
                     ),
@@ -320,6 +357,7 @@ macro_rules! define_format {
                     limits: DecompressionLimits::new(),
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     multi_stream: $multi_stream_default,
+                    trailing_data: TrailingData::Preserve,
                     pool: None,
                     options: <$decompressor_options>::default(),
                 }
@@ -348,6 +386,17 @@ macro_rules! define_format {
         /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
         pub fn decompress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
             Decompressor::new(memory).decompress(input)
+        }
+
+        #[doc = concat!("Decompresses a complete ", $name, " stream with explicit limits.")]
+        ///
+        /// This is the convenient path for untrusted in-memory input.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the data is malformed, truncated, or exceeds `limits`.
+        pub fn decompress_with_limits(input: BytesView, memory: impl MemoryShared, limits: DecompressionLimits) -> Result<BytesView> {
+            Decompressor::builder().limits(limits).build(memory).decompress(input)
         }
     };
 }

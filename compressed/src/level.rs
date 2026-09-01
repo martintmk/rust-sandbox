@@ -1,15 +1,19 @@
 // Licensed under the MIT License.
 
-/// A compression level, from [`Level::NONE`] (store only) to [`Level::BEST`].
+/// A portable compression-effort level from [`Level::MIN`] to [`Level::MAX`].
 ///
 /// This is a newtype rather than a re-export of the underlying compression engine's level type.
 /// Exposing the engine's type would make the engine part of this crate's semver surface, so
 /// swapping or upgrading it would become a breaking change for every consumer.
 ///
+/// The scale orders settings from lower effort and latency to higher effort and usually better
+/// compression. It does not promise that zero disables compression or that nine is the strongest
+/// setting a format supports; use a format-specific level type when exact native control matters.
+///
 /// The scale is portable but its *cost* is not, and the difference between formats is large. On
 /// the deflate family and on zstd, moving up the scale changes the time taken but barely moves the
 /// memory used. On brotli both climb steeply towards the top of the range, while the ratio gained
-/// over the middle of the range stays small. Treat [`Level::BEST`] as a deliberate choice to be
+/// over the middle of the range stays small. Treat [`Level::HIGH`] as a deliberate choice to be
 /// measured on real payloads, not as a free improvement.
 ///
 /// # Examples
@@ -18,15 +22,15 @@
 /// use compressed::Level;
 ///
 /// assert_eq!(Level::default(), Level::DEFAULT);
-/// assert_eq!(Level::new(9), Some(Level::BEST));
+/// assert_eq!(Level::new(9), Some(Level::HIGH));
 /// assert_eq!(Level::new(10), None);
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Level(u8);
 
 impl Level {
-    /// No compression: the data is stored, wrapped in the container format.
-    pub const NONE: Self = Self(0);
+    /// The lowest-effort setting on the portable scale.
+    pub const MIN: Self = Self(0);
 
     /// The fastest level that still compresses.
     pub const FAST: Self = Self(1);
@@ -34,18 +38,15 @@ impl Level {
     /// A balanced trade-off between speed and compression ratio.
     pub const DEFAULT: Self = Self(6);
 
-    /// The best compression ratio, at the highest cost in time and, on some formats, in memory.
+    /// A high-compression setting at a correspondingly high cost.
     ///
     /// See the note on [`Level`] before reaching for this.
-    pub const BEST: Self = Self(9);
+    pub const HIGH: Self = Self(9);
 
-    /// The weakest level, the same as [`Level::NONE`].
-    pub const MIN: Self = Self::NONE;
-
-    /// The strongest level, the same as [`Level::BEST`].
+    /// The top of the portable scale, the same as [`Level::HIGH`].
     ///
     /// This is a `Level` rather than a bare number, so it can be passed straight to a builder.
-    pub const MAX: Self = Self::BEST;
+    pub const MAX: Self = Self::HIGH;
 
     /// Creates a level, or returns `None` if `level` exceeds [`Level::MAX`].
     ///
@@ -111,14 +112,14 @@ mod tests {
 
     #[test]
     fn bounds_are_levels_so_they_can_be_passed_to_a_builder() {
-        assert_eq!(Level::MIN, Level::NONE);
-        assert_eq!(Level::MAX, Level::BEST);
+        assert_eq!(Level::MIN.get(), 0);
+        assert_eq!(Level::MAX, Level::HIGH);
     }
 
     #[test]
     fn conversions_follow_the_standard_traits() {
-        assert_eq!(Level::try_from(9).expect("in range"), Level::BEST);
-        assert_eq!(u8::from(Level::BEST), 9);
+        assert_eq!(Level::try_from(9).expect("in range"), Level::HIGH);
+        assert_eq!(u8::from(Level::HIGH), 9);
 
         let error = Level::try_from(10).expect_err("out of range");
         assert!(error.is_invalid_configuration(), "got {error}");
@@ -127,10 +128,10 @@ mod tests {
 
     #[test]
     fn named_levels_have_the_expected_values() {
-        assert_eq!(Level::NONE.get(), 0);
+        assert_eq!(Level::MIN.get(), 0);
         assert_eq!(Level::FAST.get(), 1);
         assert_eq!(Level::DEFAULT.get(), 6);
-        assert_eq!(Level::BEST.get(), 9);
+        assert_eq!(Level::HIGH.get(), 9);
     }
 
     #[test]
@@ -140,8 +141,8 @@ mod tests {
 
     #[test]
     fn levels_order_by_strength() {
-        assert!(Level::NONE < Level::FAST);
+        assert!(Level::MIN < Level::FAST);
         assert!(Level::FAST < Level::DEFAULT);
-        assert!(Level::DEFAULT < Level::BEST);
+        assert!(Level::DEFAULT < Level::HIGH);
     }
 }

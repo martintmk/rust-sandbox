@@ -13,16 +13,17 @@ use brotli::enc::encode::{BrotliEncoderOperation, BrotliEncoderStateStruct};
 use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc, HuffmanCode};
 
 use crate::brotli::{CompressorOptions, Mode};
-use crate::engine::{Codec, Step};
+use crate::engine::{Codec, Operation, Step, StreamEnd};
 use crate::error::{Error, Result};
 use crate::level::Level;
 use crate::limits::FormatLimits;
+use crate::trailing::TrailingData;
 
 /// Brotli's native quality range is `0..=11`, wider than the portable [`Level`] scale of `0..=9`.
 ///
 /// A round-to-nearest linear map, so the endpoints line up (`0 -> 0`, `9 -> 11`) and the mapping
 /// stays monotonic.
-fn quality(level: Level) -> u32 {
+fn portable_quality(level: Level) -> u32 {
     let scaled = (u32::from(level.get()) * 11 + 4) / 9;
     scaled.min(11)
 }
@@ -44,6 +45,7 @@ fn initialize(output: &mut [MaybeUninit<u8>]) -> &mut [u8] {
 pub(crate) struct BrotliCompress {
     state: BrotliEncoderStateStruct<StandardAlloc>,
     finished: bool,
+    configuration_valid: bool,
 }
 
 impl BrotliCompress {
@@ -51,11 +53,18 @@ impl BrotliCompress {
         use brotli::enc::encode::BrotliEncoderParameter;
 
         let mut state = BrotliEncoderStateStruct::new(StandardAlloc::default());
-        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_QUALITY, quality(level));
-        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_LGWIN, u32::from(options.window_size.get()));
-        state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_MODE, mode(options.mode));
+        let quality = options
+            .quality
+            .map_or_else(|| portable_quality(level), |quality| u32::from(quality.get()));
+        let configuration_valid = state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_QUALITY, quality)
+            && state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_LGWIN, u32::from(options.window_size.get()))
+            && state.set_parameter(BrotliEncoderParameter::BROTLI_PARAM_MODE, mode(options.mode));
 
-        Self { state, finished: false }
+        Self {
+            state,
+            finished: false,
+            configuration_valid,
+        }
     }
 }
 
@@ -77,11 +86,17 @@ impl std::fmt::Debug for BrotliCompress {
 }
 
 impl Codec for BrotliCompress {
-    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], last_input: bool) -> Result<(Step, usize, usize)> {
-        let operation = if last_input {
-            BrotliEncoderOperation::BROTLI_OPERATION_FINISH
-        } else {
-            BrotliEncoderOperation::BROTLI_OPERATION_PROCESS
+    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], operation: Operation) -> Result<(Step, usize, usize)> {
+        if !self.configuration_valid {
+            return Err(Error::invalid_configuration(
+                "the brotli compression engine rejected its configuration",
+            ));
+        }
+
+        let brotli_operation = match operation {
+            Operation::Process => BrotliEncoderOperation::BROTLI_OPERATION_PROCESS,
+            Operation::Flush => BrotliEncoderOperation::BROTLI_OPERATION_FLUSH,
+            Operation::Finish => BrotliEncoderOperation::BROTLI_OPERATION_FINISH,
         };
 
         let out = initialize(output);
@@ -92,7 +107,7 @@ impl Codec for BrotliCompress {
         let mut total_out = None;
 
         let ok = self.state.compress_stream(
-            operation,
+            brotli_operation,
             &mut available_in,
             input,
             &mut input_offset,
@@ -108,13 +123,19 @@ impl Codec for BrotliCompress {
         }
 
         self.finished = self.state.is_finished();
-        let step = if self.finished { Step::StreamEnd } else { Step::Continue };
+        let step = if self.finished {
+            Step::StreamEnd
+        } else if operation == Operation::Flush && available_in == 0 && !self.state.has_more_output() {
+            Step::FlushComplete
+        } else {
+            Step::Continue
+        };
 
         Ok((step, input_offset, output_offset))
     }
 
-    fn stream_ended(&mut self, _more_input_available: bool) -> bool {
-        true
+    fn stream_ended(&mut self) -> Result<StreamEnd> {
+        Ok(StreamEnd::Complete)
     }
 }
 
@@ -122,15 +143,17 @@ pub(crate) struct BrotliDecompress {
     state: BrotliState<HeapAlloc<u8>, HeapAlloc<u32>, HeapAlloc<HuffmanCode>>,
     limits: FormatLimits,
     multi_stream: bool,
+    trailing_data: TrailingData,
     total_out: usize,
 }
 
 impl BrotliDecompress {
-    pub(crate) fn new(limits: FormatLimits, multi_stream: bool) -> Self {
+    pub(crate) fn new(limits: FormatLimits, multi_stream: bool, trailing_data: TrailingData) -> Self {
         Self {
             state: Self::state(),
             limits,
             multi_stream,
+            trailing_data,
             total_out: 0,
         }
     }
@@ -145,12 +168,13 @@ impl std::fmt::Debug for BrotliDecompress {
         f.debug_struct("BrotliDecompress")
             .field("limits", &self.limits)
             .field("multi_stream", &self.multi_stream)
+            .field("trailing_data", &self.trailing_data)
             .finish_non_exhaustive()
     }
 }
 
 impl Codec for BrotliDecompress {
-    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _last_input: bool) -> Result<(Step, usize, usize)> {
+    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
         let out = initialize(output);
         let mut available_in = input.len();
         let mut input_offset = 0_usize;
@@ -179,18 +203,29 @@ impl Codec for BrotliDecompress {
         Ok((step, input_offset, output_offset))
     }
 
-    fn stream_ended(&mut self, more_input_available: bool) -> bool {
-        if !self.multi_stream || !more_input_available {
-            return true;
+    fn stream_ended(&mut self) -> Result<StreamEnd> {
+        if !self.multi_stream {
+            return Ok(match self.trailing_data {
+                TrailingData::Preserve => StreamEnd::Complete,
+                TrailingData::Reject => StreamEnd::AwaitEof,
+            });
         }
 
         self.state = Self::state();
         self.total_out = 0;
-        false
+        Ok(StreamEnd::NextStream)
     }
 
-    fn check_limits(&self, total_in: u64, total_out: u64) -> Result<()> {
-        self.limits.check(total_in, total_out)
+    fn check_limits(&self, total_in: u64, total_out: u64, streams: u64) -> Result<()> {
+        self.limits.check(total_in, total_out, streams)
+    }
+
+    fn remaining_output(&self, total_out: u64) -> Option<u64> {
+        self.limits.remaining_output(total_out)
+    }
+
+    fn max_streams(&self) -> Option<u64> {
+        self.limits.max_streams()
     }
 }
 
@@ -200,13 +235,13 @@ mod tests {
 
     #[test]
     fn quality_maps_the_portable_scale_onto_brotlis_range() {
-        assert_eq!(quality(Level::NONE), 0, "the floor must line up");
-        assert_eq!(quality(Level::BEST), 11, "the ceiling must line up");
+        assert_eq!(portable_quality(Level::MIN), 0, "the floor must line up");
+        assert_eq!(portable_quality(Level::HIGH), 11, "the ceiling must line up");
 
         let mut previous = None;
         for raw in 0..=Level::MAX.get() {
             let level = Level::new(raw).expect("level is in range");
-            let mapped = quality(level);
+            let mapped = portable_quality(level);
 
             assert!(Some(mapped) > previous, "mapping must be strictly monotonic at level {raw}");
             assert!(mapped <= 11, "level {raw} mapped outside brotli's range");

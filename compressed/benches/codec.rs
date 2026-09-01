@@ -302,7 +302,7 @@ fn levels(criterion: &mut Criterion, session: &Session) {
         let memory = GlobalPool::new();
         let input = view(&bytes, &memory);
 
-        for level in [Level::FAST, Level::DEFAULT, Level::BEST] {
+        for level in [Level::FAST, Level::DEFAULT, Level::HIGH] {
             let name = format!("{format:?}/{}", level.get());
             let operation = session.operation(&format!("level {name}"));
 
@@ -374,7 +374,7 @@ fn ratios() {
     println!("|---------|-------|-------|");
 
     for &format in Format::ALL {
-        for level in [Level::FAST, Level::DEFAULT, Level::BEST] {
+        for level in [Level::FAST, Level::DEFAULT, Level::HIGH] {
             let compressed = compress(format, Some(level), None, None, &input, &memory);
 
             #[expect(clippy::cast_precision_loss, reason = "a ratio needs no more precision than this")]
@@ -411,7 +411,7 @@ fn zstd_footprint() {
     println!("| Level | CCtx bytes | DCtx bytes |");
     println!("|-------|------------|------------|");
 
-    for level in [Level::FAST, Level::DEFAULT, Level::BEST] {
+    for level in [Level::FAST, Level::DEFAULT, Level::HIGH] {
         // The contexts allocate lazily, so measure only after real work has sized them.
         let mut context = zstd_safe::CCtx::create();
         let written = context

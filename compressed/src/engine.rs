@@ -15,13 +15,40 @@ use crate::output::Output;
 /// than one pending input view plus one chunk of output.
 pub(crate) const DEFAULT_CHUNK_SIZE: usize = 64 * 1024;
 
+/// Maximum input consumed by one public `pull` call.
+const MAX_INPUT_PER_PULL: usize = 1024 * 1024;
+
+/// Maximum engine calls made by one public `pull` call.
+const MAX_STEPS_PER_PULL: usize = 64;
+
+/// What the encoder should do with the input supplied to one engine step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Operation {
+    Process,
+    Flush,
+    Finish,
+}
+
 /// The outcome of a single engine step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
     /// The engine can do more work, given more input or more output space.
     Continue,
+    /// A requested resumable flush completed.
+    FlushComplete,
     /// The engine reached the end of a compressed stream.
     StreamEnd,
+}
+
+/// What a decoder wants to do after one compressed stream ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamEnd {
+    /// The logical input is complete; preserve any unconsumed bytes as a remainder.
+    Complete,
+    /// The stream is complete only when the caller confirms EOF.
+    AwaitEof,
+    /// Reset the codec and accept another compressed stream.
+    NextStream,
 }
 
 /// One direction of a compression algorithm, as the [`Pump`] drives it.
@@ -31,21 +58,28 @@ pub(crate) trait Codec {
     /// Returns the step outcome, the number of input bytes consumed, and the number of output
     /// bytes written to the front of `output`.
     ///
-    /// `last_input` is true only when `input` is the final slice the codec will ever receive. A
-    /// [`BytesView`] is a chain of segments, so "the caller finished pushing" is not the same as
-    /// "this is the last slice": finalizing on a non-final segment would truncate the stream.
-    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], last_input: bool) -> Result<(Step, usize, usize)>;
+    /// `operation` is only `Flush` or `Finish` on the final slice of the currently pending input.
+    /// A [`BytesView`] is a chain of segments, so signalling either operation on an earlier segment
+    /// would flush or finalize at the wrong boundary.
+    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], operation: Operation) -> Result<(Step, usize, usize)>;
 
     /// Called when [`Codec::step`] reported [`Step::StreamEnd`].
-    ///
-    /// `more_input_available` says whether unconsumed input remains. Returns `true` if the logical
-    /// stream is complete, or `false` if the codec re-armed itself for another container.
-    fn stream_ended(&mut self, more_input_available: bool) -> bool;
+    fn stream_ended(&mut self) -> Result<StreamEnd>;
 
     /// Validates the cumulative byte counts, for codecs that enforce limits.
-    fn check_limits(&self, total_in: u64, total_out: u64) -> Result<()> {
-        let _ = (total_in, total_out);
+    fn check_limits(&self, total_in: u64, total_out: u64, streams: u64) -> Result<()> {
+        let _ = (total_in, total_out, streams);
         Ok(())
+    }
+
+    /// Returns the remaining absolute output budget, if one is configured.
+    fn remaining_output(&self, _total_out: u64) -> Option<u64> {
+        None
+    }
+
+    /// Returns the maximum number of streams this codec may decode.
+    fn max_streams(&self) -> Option<u64> {
+        None
     }
 }
 
@@ -53,10 +87,20 @@ pub(crate) trait Codec {
 enum State {
     /// Accepting input.
     Open,
+    /// Draining a resumable flush. `end_after` queues finalization behind it.
+    Flushing { end_after: bool },
     /// The caller signalled end of input; drain the engine.
     Finishing,
+    /// A compressed stream ended and the decoder is waiting for another one or EOF.
+    BetweenStreams,
+    /// A single stream ended and strict trailing-data validation is waiting for EOF.
+    AwaitingEof,
+    /// The configured stream-count limit was reached; only EOF is now valid.
+    AtStreamLimit { maximum: u64 },
     /// The engine reported end of stream.
     Done,
+    /// A fatal codec error occurred. Native state must never be entered again.
+    Failed,
 }
 
 /// Moves bytes between a [`BytesView`] source and a [`BytesBuf`] sink through a [`Codec`].
@@ -73,6 +117,7 @@ pub(crate) struct Pump {
     output: BytesBuf,
     total_in: u64,
     total_out: u64,
+    streams: u64,
     state: State,
 }
 
@@ -88,29 +133,68 @@ impl Pump {
             output,
             total_in: 0,
             total_out: 0,
+            streams: 0,
             state: State::Open,
         }
     }
 
     pub(crate) fn push(&mut self, input: BytesView) -> Result<()> {
-        if self.state != State::Open {
-            return Err(Error::invalid_state("cannot push more input after the codec has been finished"));
-        }
-
         if !self.input.is_empty() {
             return Err(Error::invalid_state(
                 "cannot push more input while previously pushed input is still pending",
             ));
         }
 
+        match self.state {
+            State::Open => {}
+            State::BetweenStreams => self.state = State::Open,
+            State::AwaitingEof | State::AtStreamLimit { .. } if input.is_empty() => return Ok(()),
+            State::AwaitingEof => {
+                let error = Error::corrupt_data("trailing data followed the compressed stream");
+                return Err(self.fail(error));
+            }
+            State::AtStreamLimit { maximum } => {
+                let error = Error::stream_limit_exceeded(self.streams.saturating_add(1), maximum);
+                return Err(self.fail(error));
+            }
+            State::Flushing { .. } => {
+                return Err(Error::invalid_state("cannot push more input while a flush is still pending"));
+            }
+            State::Finishing | State::Done => {
+                return Err(Error::invalid_state("cannot push more input after end of input was signalled"));
+            }
+            State::Failed => {
+                return Err(Error::invalid_state("cannot push more input after the codec failed"));
+            }
+        }
+
         self.input = input;
         Ok(())
     }
 
-    pub(crate) fn finish(&mut self) {
-        if self.state == State::Open {
-            self.state = State::Finishing;
+    pub(crate) fn flush(&mut self) -> Result<()> {
+        match self.state {
+            State::Open => self.state = State::Flushing { end_after: false },
+            State::Flushing { .. } => {}
+            State::Finishing | State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } | State::Done => {
+                return Err(Error::invalid_state("cannot flush after end of input was signalled"));
+            }
+            State::Failed => {
+                return Err(Error::invalid_state("cannot flush after the codec failed"));
+            }
         }
+
+        Ok(())
+    }
+
+    pub(crate) fn end_input(&mut self) {
+        self.state = match self.state {
+            State::Open => State::Finishing,
+            State::Flushing { .. } => State::Flushing { end_after: true },
+            State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } => State::Done,
+            State::Finishing | State::Done => self.state,
+            State::Failed => State::Failed,
+        };
     }
 
     pub(crate) fn total_in(&self) -> u64 {
@@ -119,6 +203,19 @@ impl Pump {
 
     pub(crate) fn total_out(&self) -> u64 {
         self.total_out
+    }
+
+    pub(crate) fn take_remainder(&mut self) -> Result<BytesView> {
+        if self.state != State::Done {
+            return Err(Error::invalid_state("the input remainder is available only after decoding is done"));
+        }
+
+        Ok(std::mem::replace(&mut self.input, BytesView::new()))
+    }
+
+    fn fail(&mut self, error: Error) -> Error {
+        self.state = State::Failed;
+        error
     }
 
     /// Hands over whatever output has accumulated, if any.
@@ -130,10 +227,24 @@ impl Pump {
         Some(self.output.consume_all())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeping the state transitions in one loop makes their ordering and terminal paths explicit"
+    )]
     pub(crate) fn pull(&mut self, codec: &mut impl Codec) -> Result<Output> {
-        if self.state == State::Done {
-            return Ok(self.take_output().map_or(Output::Done, Output::Data));
+        match self.state {
+            State::Done => return Ok(self.take_output().map_or(Output::Done, Output::Data)),
+            State::Failed => {
+                return Err(Error::invalid_state("cannot continue after a previous codec failure"));
+            }
+            State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } if self.input.is_empty() => {
+                return Ok(self.take_output().map_or(Output::NeedInput, Output::Data));
+            }
+            _ => {}
         }
+
+        let mut steps = 0;
+        let mut input_work = 0;
 
         loop {
             // Hand over a full chunk rather than growing the buffer, so the working set stays
@@ -144,9 +255,11 @@ impl Pump {
                 return Ok(Output::Data(data));
             }
 
-            let end_of_input = self.state == State::Finishing;
+            if steps >= MAX_STEPS_PER_PULL || input_work >= MAX_INPUT_PER_PULL {
+                return Ok(self.take_output().map_or(Output::Progress, Output::Data));
+            }
 
-            if self.input.is_empty() && !end_of_input {
+            if self.input.is_empty() && self.state == State::Open {
                 return Ok(self.take_output().map_or(Output::NeedInput, Output::Data));
             }
 
@@ -159,14 +272,36 @@ impl Pump {
             // the cost of the engine's zero-fill of the uninitialized output slice.
             let budget = self.chunk_size - self.output.len();
             let pending = self.input.len();
-
-            let (step, consumed, produced) = {
-                let input = self.input.first_slice();
-                let last_input = end_of_input && input.len() == pending;
+            let input_budget = MAX_INPUT_PER_PULL - input_work;
+            let (step, consumed, produced, supplied) = {
+                let first = self.input.first_slice();
+                let input = &first[..first.len().min(input_budget)];
+                let supplied = input.len();
+                let last_slice = input.len() == pending;
+                let operation = match self.state {
+                    State::Flushing { .. } if last_slice => Operation::Flush,
+                    State::Finishing if last_slice => Operation::Finish,
+                    State::Open | State::Flushing { .. } | State::Finishing => Operation::Process,
+                    State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } | State::Done | State::Failed => {
+                        unreachable!("non-driving states return before stepping")
+                    }
+                };
                 let spare = self.output.first_unfilled_slice();
-                let take = spare.len().min(budget);
-                codec.step(input, &mut spare[..take], last_input)?
+                let remaining = codec.remaining_output(self.total_out);
+                let limit_budget = remaining.map_or(usize::MAX, |remaining| usize::try_from(remaining).unwrap_or(usize::MAX));
+                // One probe byte lets the engine prove that a stream ending exactly at the limit
+                // needs no more output, while bounding any overshoot to a byte that is never
+                // returned to the caller.
+                let take = spare.len().min(budget).min(limit_budget.max(1));
+                match codec.step(input, &mut spare[..take], operation) {
+                    Ok((step, consumed, produced)) => (step, consumed, produced, supplied),
+                    Err(error) => return Err(self.fail(error)),
+                }
             };
+
+            if consumed > supplied || produced > budget {
+                return Err(self.fail(Error::invalid_state("the compression engine reported invalid byte counts")));
+            }
 
             self.input.advance(consumed);
 
@@ -176,21 +311,94 @@ impl Pump {
 
             self.total_in = self.total_in.saturating_add(u64::try_from(consumed).unwrap_or(u64::MAX));
             self.total_out = self.total_out.saturating_add(u64::try_from(produced).unwrap_or(u64::MAX));
-            codec.check_limits(self.total_in, self.total_out)?;
+            input_work = input_work.saturating_add(consumed);
+            steps += 1;
 
-            if step == Step::StreamEnd && codec.stream_ended(!self.input.is_empty()) {
-                self.state = State::Done;
-                return Ok(self.take_output().map_or(Output::Done, Output::Data));
+            if let Err(error) = codec.check_limits(self.total_in, self.total_out, self.streams) {
+                return Err(self.fail(error));
+            }
+
+            if step == Step::FlushComplete {
+                self.state = match self.state {
+                    State::Flushing { end_after: true } => State::Finishing,
+                    State::Flushing { end_after: false } => State::Open,
+                    _ => {
+                        return Err(self.fail(Error::invalid_state("the compression engine completed an unrequested flush")));
+                    }
+                };
+
+                if let Some(data) = self.take_output() {
+                    return Ok(Output::Data(data));
+                }
+
+                if self.state == State::Open {
+                    return Ok(Output::NeedInput);
+                }
+
+                continue;
+            }
+
+            if step == Step::StreamEnd {
+                self.streams = self.streams.saturating_add(1);
+                if let Err(error) = codec.check_limits(self.total_in, self.total_out, self.streams) {
+                    return Err(self.fail(error));
+                }
+
+                let end_of_input = self.state == State::Finishing;
+                let stream_end = match codec.stream_ended() {
+                    Ok(stream_end) => stream_end,
+                    Err(error) => return Err(self.fail(error)),
+                };
+
+                self.state = match stream_end {
+                    StreamEnd::Complete => State::Done,
+                    StreamEnd::AwaitEof if !self.input.is_empty() => {
+                        return Err(self.fail(Error::corrupt_data("trailing data followed the compressed stream")));
+                    }
+                    StreamEnd::AwaitEof if end_of_input => State::Done,
+                    StreamEnd::AwaitEof => State::AwaitingEof,
+                    StreamEnd::NextStream
+                        if codec.max_streams().is_some_and(|maximum| self.streams >= maximum) && !self.input.is_empty() =>
+                    {
+                        let maximum = codec.max_streams().unwrap_or(u64::MAX);
+                        return Err(self.fail(Error::stream_limit_exceeded(self.streams.saturating_add(1), maximum)));
+                    }
+                    StreamEnd::NextStream if codec.max_streams().is_some_and(|maximum| self.streams >= maximum) && end_of_input => {
+                        State::Done
+                    }
+                    StreamEnd::NextStream if let Some(maximum) = codec.max_streams().filter(|maximum| self.streams >= *maximum) => {
+                        State::AtStreamLimit { maximum }
+                    }
+                    StreamEnd::NextStream if !self.input.is_empty() && end_of_input => State::Finishing,
+                    StreamEnd::NextStream if !self.input.is_empty() => State::Open,
+                    StreamEnd::NextStream if end_of_input => State::Done,
+                    StreamEnd::NextStream => State::BetweenStreams,
+                };
+
+                if let Some(data) = self.take_output() {
+                    return Ok(Output::Data(data));
+                }
+
+                return Ok(match self.state {
+                    State::Done => Output::Done,
+                    State::Open => continue,
+                    State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } => Output::NeedInput,
+                    _ => unreachable!("stream-end transition produced an invalid state"),
+                });
             }
 
             if consumed == 0 && produced == 0 {
-                if end_of_input {
+                if self.state == State::Finishing {
                     // There is room to write and no more input is coming, yet the engine cannot
-                    // finish: the input ended part-way through a container.
-                    return Err(Error::unexpected_end_of_stream());
+                    // finish the stream: the input ended part-way through a container.
+                    return Err(self.fail(Error::unexpected_end_of_stream()));
                 }
 
-                return Ok(self.take_output().map_or(Output::NeedInput, Output::Data));
+                if self.input.is_empty() && self.state == State::Open {
+                    return Ok(self.take_output().map_or(Output::NeedInput, Output::Data));
+                }
+
+                return Err(self.fail(Error::invalid_state("the compression engine could not make progress")));
             }
         }
     }
@@ -209,22 +417,26 @@ mod tests {
     }
 
     impl Codec for Passthrough {
-        fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], last_input: bool) -> Result<(Step, usize, usize)> {
+        fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], operation: Operation) -> Result<(Step, usize, usize)> {
             let count = input.len().min(output.len());
             for (slot, byte) in output.iter_mut().zip(input.iter().take(count)) {
                 slot.write(*byte);
             }
 
-            if last_input && count == input.len() {
+            if operation == Operation::Finish && count == input.len() {
                 self.ended = true;
                 return Ok((Step::StreamEnd, count, count));
+            }
+
+            if operation == Operation::Flush && count == input.len() {
+                return Ok((Step::FlushComplete, count, count));
             }
 
             Ok((Step::Continue, count, count))
         }
 
-        fn stream_ended(&mut self, _more_input_available: bool) -> bool {
-            true
+        fn stream_ended(&mut self) -> Result<StreamEnd> {
+            Ok(StreamEnd::Complete)
         }
     }
 
@@ -275,6 +487,47 @@ mod tests {
     }
 
     #[test]
+    fn bounds_input_work_and_reports_progress() {
+        #[derive(Debug)]
+        struct SilentConsumer;
+
+        impl Codec for SilentConsumer {
+            fn step(&mut self, input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Ok((Step::Continue, input.len(), 0))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(&vec![0_u8; MAX_INPUT_PER_PULL + 1])).expect("push succeeds");
+
+        assert!(pump.pull(&mut SilentConsumer).expect("pull succeeds").is_progress());
+        assert_eq!(pump.total_in(), MAX_INPUT_PER_PULL as u64);
+    }
+
+    #[test]
+    fn flush_returns_to_the_open_state() {
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(b"flush me")).expect("push succeeds");
+        pump.flush().expect("flush request succeeds");
+
+        let mut codec = Passthrough::default();
+        assert_eq!(
+            pump.pull(&mut codec)
+                .expect("pull succeeds")
+                .into_data()
+                .expect("flushed data")
+                .to_vec(),
+            b"flush me".to_vec()
+        );
+        assert!(pump.pull(&mut codec).expect("pull succeeds").is_need_input());
+        pump.push(view(b"more")).expect("input is accepted after the flush");
+    }
+
+    #[test]
     fn rejects_a_second_push_while_input_is_pending() {
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
         pump.push(view(b"first")).expect("push succeeds");
@@ -284,19 +537,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_push_after_finish() {
+    fn rejects_push_after_end_input() {
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
-        pump.finish();
+        pump.end_input();
 
-        let error = pump.push(view(b"late")).expect_err("push after finish is rejected");
+        let error = pump.push(view(b"late")).expect_err("push after end_input is rejected");
         assert!(error.is_invalid_state());
     }
 
     #[test]
-    fn finish_is_idempotent() {
+    fn end_input_is_idempotent() {
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
-        pump.finish();
-        pump.finish();
+        pump.end_input();
+        pump.end_input();
 
         let output = pump.pull(&mut Passthrough::default()).expect("pull succeeds");
         assert!(output.is_done());
@@ -306,7 +559,7 @@ mod tests {
     fn reports_done_after_the_stream_ends() {
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
         pump.push(view(b"tail")).expect("push succeeds");
-        pump.finish();
+        pump.end_input();
 
         let mut codec = Passthrough::default();
         let data = pump.pull(&mut codec).expect("pull succeeds").into_data().expect("data");
@@ -323,17 +576,17 @@ mod tests {
         struct NeverEnds;
 
         impl Codec for NeverEnds {
-            fn step(&mut self, _input: &[u8], _output: &mut [MaybeUninit<u8>], _last_input: bool) -> Result<(Step, usize, usize)> {
+            fn step(&mut self, _input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
                 Ok((Step::Continue, 0, 0))
             }
 
-            fn stream_ended(&mut self, _more_input_available: bool) -> bool {
-                true
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
             }
         }
 
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
-        pump.finish();
+        pump.end_input();
 
         let error = pump.pull(&mut NeverEnds).expect_err("truncation is reported");
         assert!(error.is_unexpected_end_of_stream());
@@ -346,7 +599,7 @@ mod tests {
         struct Expanding;
 
         impl Codec for Expanding {
-            fn step(&mut self, _input: &[u8], output: &mut [MaybeUninit<u8>], _last_input: bool) -> Result<(Step, usize, usize)> {
+            fn step(&mut self, _input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
                 for slot in output.iter_mut() {
                     slot.write(0);
                 }
@@ -354,13 +607,13 @@ mod tests {
                 Ok((Step::Continue, 0, output.len()))
             }
 
-            fn stream_ended(&mut self, _more_input_available: bool) -> bool {
-                true
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
             }
 
-            fn check_limits(&self, _total_in: u64, total_out: u64) -> Result<()> {
+            fn check_limits(&self, _total_in: u64, total_out: u64, _streams: u64) -> Result<()> {
                 if total_out > 0 {
-                    return Err(Error::limit_exceeded("test limit"));
+                    return Err(Error::output_limit_exceeded(total_out, 0));
                 }
 
                 Ok(())

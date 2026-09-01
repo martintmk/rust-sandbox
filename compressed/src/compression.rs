@@ -32,6 +32,8 @@ mod sealed {
     impl Compression for crate::zstd::Decompressor {}
 
     impl<D> Compression for Box<dyn super::Compression<Mode = D>> {}
+    impl Compression for Box<dyn super::Compressing> {}
+    impl Compression for Box<dyn super::Decompressing> {}
 }
 
 /// Marks a [`Compression`] implementation that compresses its input.
@@ -89,11 +91,11 @@ pub trait Compression: sealed::Compression + fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if input is still pending or the operation has been finished.
+    /// Returns an error if input is still pending or end of input has been signalled.
     fn push(&mut self, input: BytesView) -> Result<()>;
 
     /// Signals that no further input will be supplied.
-    fn finish(&mut self);
+    fn end_input(&mut self);
 
     /// Produces the next output chunk.
     ///
@@ -104,7 +106,7 @@ pub trait Compression: sealed::Compression + fmt::Debug + Send + Sync {
 
     /// Processes one complete input and returns the whole result.
     ///
-    /// This is shorthand for [`push`][Compression::push], [`finish`][Compression::finish], and
+    /// This is shorthand for [`push`][Compression::push], [`end_input`][Compression::end_input], and
     /// draining [`pull`][Compression::pull]. It ends the operation, so an implementation serves
     /// one call. Drive `pull` directly to keep memory bounded by the configured chunk size.
     ///
@@ -116,11 +118,18 @@ pub trait Compression: sealed::Compression + fmt::Debug + Send + Sync {
         Self: Sized,
     {
         self.push(input)?;
-        self.finish();
+        self.end_input();
 
         let mut collected = BytesBuf::new();
-        while let Some(chunk) = self.pull()?.into_data() {
-            collected.put_bytes(chunk);
+        loop {
+            match self.pull()? {
+                Output::Data(chunk) => collected.put_bytes(chunk),
+                Output::Progress => {}
+                Output::Done => break,
+                Output::NeedInput => {
+                    return Err(crate::Error::invalid_state("the operation requested input after end of input"));
+                }
+            }
         }
 
         Ok(collected.consume_all())
@@ -151,6 +160,29 @@ pub trait Compression: sealed::Compression + fmt::Debug + Send + Sync {
     }
 }
 
+/// Additional operations available while compressing.
+pub trait Compressing: Compression<Mode = Compress> {
+    /// Requests a resumable flush of all input supplied so far.
+    ///
+    /// Drain [`Compression::pull`] until it reports [`Output::NeedInput`] before pushing more
+    /// input. Flushing can reduce the compression ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-state error after end of input or a previous operation failure.
+    fn flush(&mut self) -> Result<()>;
+}
+
+/// Additional operations available while decompressing.
+pub trait Decompressing: Compression<Mode = Decompress> {
+    /// Takes bytes already buffered after a completed single compressed stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-state error until decompression reports [`Output::Done`].
+    fn take_remainder(&mut self) -> Result<BytesView>;
+}
+
 /// Implements the shared trait for a format module's compressor and decompressor.
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 macro_rules! impl_compression {
@@ -163,12 +195,18 @@ macro_rules! impl_compression {
                     Self::push(self, input)
                 }
 
-                fn finish(&mut self) {
-                    Self::finish(self);
+                fn end_input(&mut self) {
+                    Self::end_input(self);
                 }
 
                 fn pull(&mut self) -> Result<Output> {
                     Self::pull(self)
+                }
+            }
+
+            impl Compressing for crate::$module::Compressor {
+                fn flush(&mut self) -> Result<()> {
+                    Self::flush(self)
                 }
             }
 
@@ -179,12 +217,19 @@ macro_rules! impl_compression {
                     Self::push(self, input)
                 }
 
-                fn finish(&mut self) {
-                    Self::finish(self);
+                fn end_input(&mut self) {
+                    Self::end_input(self);
                 }
 
                 fn pull(&mut self) -> Result<Output> {
                     Self::pull(self)
+                }
+
+            }
+
+            impl Decompressing for crate::$module::Decompressor {
+                fn take_remainder(&mut self) -> Result<BytesView> {
+                    Self::take_remainder(self)
                 }
             }
         )+
@@ -209,12 +254,56 @@ impl<D> Compression for Box<dyn Compression<Mode = D>> {
         (**self).push(input)
     }
 
-    fn finish(&mut self) {
-        (**self).finish();
+    fn end_input(&mut self) {
+        (**self).end_input();
     }
 
     fn pull(&mut self) -> Result<Output> {
         (**self).pull()
+    }
+}
+
+impl Compression for Box<dyn Compressing> {
+    type Mode = Compress;
+
+    fn push(&mut self, input: BytesView) -> Result<()> {
+        (**self).push(input)
+    }
+
+    fn end_input(&mut self) {
+        (**self).end_input();
+    }
+
+    fn pull(&mut self) -> Result<Output> {
+        (**self).pull()
+    }
+}
+
+impl Compressing for Box<dyn Compressing> {
+    fn flush(&mut self) -> Result<()> {
+        (**self).flush()
+    }
+}
+
+impl Compression for Box<dyn Decompressing> {
+    type Mode = Decompress;
+
+    fn push(&mut self, input: BytesView) -> Result<()> {
+        (**self).push(input)
+    }
+
+    fn end_input(&mut self) {
+        (**self).end_input();
+    }
+
+    fn pull(&mut self) -> Result<Output> {
+        (**self).pull()
+    }
+}
+
+impl Decompressing for Box<dyn Decompressing> {
+    fn take_remainder(&mut self) -> Result<BytesView> {
+        (**self).take_remainder()
     }
 }
 
@@ -235,20 +324,30 @@ mod tests {
 
         let mut compressor: Box<dyn Compression<Mode = Compress>> = Box::new(gzip::Compressor::new(memory.clone()));
         Compression::push(&mut *compressor, view(b"driven through the trait")).expect("push succeeds");
-        Compression::finish(&mut *compressor);
+        Compression::end_input(&mut *compressor);
 
         let mut collected = BytesBuf::new();
-        while let Some(chunk) = Compression::pull(&mut *compressor).expect("pull succeeds").into_data() {
-            collected.put_bytes(chunk);
+        loop {
+            match Compression::pull(&mut *compressor).expect("pull succeeds") {
+                Output::Data(chunk) => collected.put_bytes(chunk),
+                Output::Progress => {}
+                Output::NeedInput => panic!("compressor requested input after end"),
+                Output::Done => break,
+            }
         }
 
         let mut decompressor: Box<dyn Compression<Mode = Decompress>> = Box::new(gzip::Decompressor::new(memory));
         Compression::push(&mut *decompressor, collected.consume_all()).expect("push succeeds");
-        Compression::finish(&mut *decompressor);
+        Compression::end_input(&mut *decompressor);
 
         let mut plain = BytesBuf::new();
-        while let Some(chunk) = Compression::pull(&mut *decompressor).expect("pull succeeds").into_data() {
-            plain.put_bytes(chunk);
+        loop {
+            match Compression::pull(&mut *decompressor).expect("pull succeeds") {
+                Output::Data(chunk) => plain.put_bytes(chunk),
+                Output::Progress => {}
+                Output::NeedInput => panic!("decompressor requested input after end"),
+                Output::Done => break,
+            }
         }
 
         assert_eq!(plain.consume_all().to_vec(), b"driven through the trait".to_vec());

@@ -38,7 +38,9 @@ define_format! {
     decompressor_codec = FlateDecompress,
     decompressor_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,
-    new_decompressor = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Raw, limits, multi_stream, pool),
+    new_decompressor = |limits, multi_stream, trailing_data, (), pool| {
+        FlateDecompress::new(Wrapper::Raw, limits, multi_stream, trailing_data, pool)
+    },
     multi_stream_default = false,
     multi_stream_doc = "Sets whether consecutive deflate streams decompress as one logical stream.\n\nDisabled by default: raw deflate carries no framing, so trailing bytes are usually not another stream.",
 }
