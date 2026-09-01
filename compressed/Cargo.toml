@@ -1,0 +1,68 @@
+# Licensed under the MIT License.
+
+[package]
+name = "compressed"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming compression and decompression over bytesbuf byte sequences"
+readme = "README.md"
+keywords = ["compression", "gzip", "streaming", "zero-copy"]
+categories = ["compression", "network-programming"]
+
+[package.metadata.coverage-gate]
+min-lines-percent = 100
+
+[package.metadata.docs.rs]
+all-features = true
+
+[package.metadata.cargo_check_external_types]
+allowed_external_types = ["bytesbuf::*", "futures_core::stream::Stream"]
+
+[features]
+brotli = ["dep:brotli"]
+# Gzip alone is the default: the most widely used format, and one dependency. Everything else is
+# opt-in, so a build that only needs brotli never compiles flate2, and vice versa.
+default = ["gzip"]
+deflate = ["dep:flate2"]
+futures-stream = ["dep:futures-core", "dep:pin-project-lite"]
+gzip = ["dep:flate2"]
+zlib = ["dep:flate2"]
+zstd = ["dep:zstd-safe"]
+
+[dependencies]
+brotli = { version = "8.0.4", default-features = false, features = ["std"], optional = true }
+bytesbuf = { version = "0.9.0", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"], optional = true }
+futures-core = { version = "0.3.31", default-features = false, optional = true }
+pin-project-lite = { version = "0.2.16", optional = true }
+zstd-safe = { version = "7.2.4", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+alloc_tracker = "0.7.1"
+brotli = { version = "8.0.4", default-features = false, features = ["std"] }
+criterion = { version = "0.8.1", default-features = false }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
+futures-core = { version = "0.3.31", default-features = false }
+pin-project-lite = "0.2.16"
+tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-stream = { version = "0.1.19", default-features = false }
+zstd-safe = { version = "7.2.4", default-features = false, features = ["std"] }
+
+[[example]]
+name = "round_trip"
+required-features = ["brotli", "deflate", "gzip", "zlib", "zstd"]
+
+[[example]]
+name = "tokio_stream"
+required-features = ["futures-stream", "gzip"]
+
+[[bench]]
+harness = false
+name = "codec"
+required-features = ["brotli", "deflate", "futures-stream", "gzip", "zlib", "zstd"]
+
+[lints]
+workspace = true
