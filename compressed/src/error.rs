@@ -21,7 +21,7 @@ pub(crate) enum Kind {
 /// An error produced while compressing or decompressing.
 ///
 /// This is a single canonical error type rather than an enum, so that new failure modes do not
-/// break downstream `match` statements. Classify a failure with the `is_*` accessors:
+/// break downstream `match` statements. Classify a failure with the `is_*` accessors.
 ///
 /// # Examples
 ///
@@ -79,8 +79,28 @@ impl Error {
         Self::new(Kind::UnexpectedEndOfStream, "compressed stream ended before the final block")
     }
 
-    pub(crate) fn limit_exceeded(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::new(Kind::LimitExceeded, message)
+    pub(crate) fn output_limit_exceeded(actual: u64, maximum: u64) -> Self {
+        Self::new(
+            Kind::LimitExceeded,
+            format!("decompressed output reached {actual} bytes, exceeding the limit of {maximum}"),
+        )
+    }
+
+    pub(crate) fn ratio_limit_exceeded(input: u64, output: u64, maximum: u32) -> Self {
+        Self::new(
+            Kind::LimitExceeded,
+            format!(
+                "decompressed output reached {output} bytes from {input} compressed bytes, \
+                 exceeding the expansion limit of {maximum}x"
+            ),
+        )
+    }
+
+    pub(crate) fn stream_limit_exceeded(actual: u64, maximum: u64) -> Self {
+        Self::new(
+            Kind::LimitExceeded,
+            format!("decoded stream count reached {actual}, exceeding the limit of {maximum}"),
+        )
     }
 
     pub(crate) fn invalid_state(message: impl Into<Cow<'static, str>>) -> Self {
@@ -122,8 +142,8 @@ impl Error {
         self.kind == Kind::LimitExceeded
     }
 
-    /// The codec was driven in an order it does not support, such as pushing input after finishing,
-    /// or the underlying compression engine reported an internal failure.
+    /// The codec was driven in an order it does not support, such as pushing input after end of
+    /// input, or the underlying compression engine reported an internal failure.
     #[must_use]
     pub fn is_invalid_state(&self) -> bool {
         self.kind == Kind::InvalidState
@@ -173,7 +193,7 @@ mod tests {
         let cases = [
             (Error::corrupt_data("bad"), [true, false, false, false]),
             (Error::unexpected_end_of_stream(), [false, true, false, false]),
-            (Error::limit_exceeded("too big"), [false, false, true, false]),
+            (Error::output_limit_exceeded(2, 1), [false, false, true, false]),
             (Error::invalid_state("wrong order"), [false, false, false, true]),
         ];
 
@@ -195,8 +215,8 @@ mod tests {
         let errors = [
             Error::corrupt_data("bad gzip header"),
             Error::unexpected_end_of_stream(),
-            Error::limit_exceeded("output limit reached"),
-            Error::invalid_state("already finished"),
+            Error::output_limit_exceeded(2, 1),
+            Error::invalid_state("input already ended"),
         ];
 
         for error in errors {
@@ -223,7 +243,7 @@ mod tests {
 
     #[test]
     fn debug_is_available_for_diagnostics() {
-        let rendered = format!("{:?}", Error::limit_exceeded("capped"));
+        let rendered = format!("{:?}", Error::output_limit_exceeded(2, 1));
         assert!(rendered.contains("LimitExceeded"), "kind should be visible: {rendered}");
     }
 }

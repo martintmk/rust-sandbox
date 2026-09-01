@@ -82,9 +82,8 @@ pub(crate) struct EngineKey {
 /// # What is actually pooled
 ///
 /// The pool is transparent: it recycles the engines that are worth recycling and silently builds
-/// the rest, so calling code never has to know which is which. Today that means **compressors for
-/// `deflate`, `zlib` and `gzip`**. Measured, the
-/// engines it does not pool are not worth pooling:
+/// the rest, so calling code never has to know which is which. Measured, the engines it does not
+/// pool are not worth pooling:
 ///
 /// | Engine | Reused? |
 /// |---|---|

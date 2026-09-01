@@ -5,13 +5,14 @@ use bytesbuf::BytesView;
 /// What a single codec step produced.
 ///
 /// This is the state machine a caller drives: keep calling `pull` until it reports
-/// [`Output::NeedInput`], supply more data, and stop at [`Output::Done`].
+/// [`Output::NeedInput`], supply more data, and stop at [`Output::Done`]. When
+/// [`Output::Progress`] is returned, call `pull` again without pushing input.
 ///
 /// It is an enum rather than an `Option<BytesView>` plus a separate `is_finished()` because
 /// "no bytes right now" and "no bytes ever again" require different responses from the caller, and
 /// conflating them turns a missing check into an infinite loop.
 ///
-/// It is deliberately *not* `#[non_exhaustive]`. These three states describe a complete codec step,
+/// It is deliberately *not* `#[non_exhaustive]`. These four states describe a complete codec step,
 /// and a caller that fails to handle one has a bug. Forcing a wildcard arm would convert that bug
 /// from a compile error into silent misbehaviour, which is the opposite of what a wildcard is for.
 #[derive(Debug)]
@@ -24,6 +25,12 @@ pub enum Output {
     ///
     /// Never empty.
     Data(BytesView),
+
+    /// The codec advanced without producing bytes.
+    ///
+    /// Call `pull` again before supplying more input. This bounds how much CPU work one `pull`
+    /// performs even when highly compressible input produces very little output.
+    Progress,
 
     /// More input is required before more output can be produced.
     NeedInput,
@@ -63,6 +70,12 @@ impl Output {
         matches!(*self, Self::NeedInput)
     }
 
+    /// Whether the codec made progress and should be pulled again.
+    #[must_use]
+    pub fn is_progress(&self) -> bool {
+        matches!(*self, Self::Progress)
+    }
+
     /// Whether the stream has ended.
     #[must_use]
     pub fn is_done(&self) -> bool {
@@ -82,6 +95,7 @@ mod tests {
         let view = BytesView::copied_from_slice(b"hello", &memory);
 
         assert_eq!(Output::Data(view).into_data().map(|d| d.to_vec()), Some(b"hello".to_vec()));
+        assert!(Output::Progress.into_data().is_none());
         assert!(Output::NeedInput.into_data().is_none());
         assert!(Output::Done.into_data().is_none());
     }
@@ -91,9 +105,20 @@ mod tests {
         let memory = GlobalPool::new();
         let data = Output::Data(BytesView::copied_from_slice(b"x", &memory));
 
-        assert!(data.is_data() && !data.is_need_input() && !data.is_done());
-        assert!(Output::NeedInput.is_need_input() && !Output::NeedInput.is_data() && !Output::NeedInput.is_done());
-        assert!(Output::Done.is_done() && !Output::Done.is_data() && !Output::Done.is_need_input());
+        assert!(data.is_data() && !data.is_progress() && !data.is_need_input() && !data.is_done());
+        assert!(
+            Output::Progress.is_progress()
+                && !Output::Progress.is_data()
+                && !Output::Progress.is_need_input()
+                && !Output::Progress.is_done()
+        );
+        assert!(
+            Output::NeedInput.is_need_input()
+                && !Output::NeedInput.is_data()
+                && !Output::NeedInput.is_progress()
+                && !Output::NeedInput.is_done()
+        );
+        assert!(Output::Done.is_done() && !Output::Done.is_data() && !Output::Done.is_progress() && !Output::Done.is_need_input());
     }
 
     #[test]

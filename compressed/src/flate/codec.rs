@@ -6,12 +6,13 @@ use std::mem::MaybeUninit;
 
 use flate2::{Compress, Decompress, FlushCompress, FlushDecompress, Status};
 
-use crate::engine::{Codec, Step};
+use crate::engine::{Codec, Operation, Step, StreamEnd};
 use crate::error::{Error, Result};
 use crate::flate::Wrapper;
 use crate::level::Level;
 use crate::limits::FormatLimits;
 use crate::pool::{EngineKey, Pool};
+use crate::trailing::TrailingData;
 
 #[derive(Debug)]
 pub(crate) struct FlateCompress {
@@ -57,8 +58,12 @@ impl Drop for FlateCompress {
 }
 
 impl Codec for FlateCompress {
-    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], last_input: bool) -> Result<(Step, usize, usize)> {
-        let flush = if last_input { FlushCompress::Finish } else { FlushCompress::None };
+    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], operation: Operation) -> Result<(Step, usize, usize)> {
+        let flush = match operation {
+            Operation::Process => FlushCompress::None,
+            Operation::Flush => FlushCompress::Sync,
+            Operation::Finish => FlushCompress::Finish,
+        };
 
         let compress = self.engine();
         let before_in = compress.total_in();
@@ -71,17 +76,17 @@ impl Codec for FlateCompress {
         let consumed = usize::try_from(compress.total_in() - before_in).unwrap_or(usize::MAX);
         let produced = usize::try_from(compress.total_out() - before_out).unwrap_or(usize::MAX);
 
-        let step = if status == Status::StreamEnd {
-            Step::StreamEnd
-        } else {
-            Step::Continue
+        let step = match operation {
+            _ if status == Status::StreamEnd => Step::StreamEnd,
+            Operation::Flush if consumed == input.len() && produced < output.len() => Step::FlushComplete,
+            _ => Step::Continue,
         };
 
         Ok((step, consumed, produced))
     }
 
-    fn stream_ended(&mut self, _more_input_available: bool) -> bool {
-        true
+    fn stream_ended(&mut self) -> Result<StreamEnd> {
+        Ok(StreamEnd::Complete)
     }
 }
 
@@ -92,13 +97,15 @@ pub(crate) struct FlateDecompress {
     wrapper: Wrapper,
     limits: FormatLimits,
     multi_stream: bool,
+    trailing_data: TrailingData,
+    needs_reset: bool,
     /// Only present where some container's decompressor can actually be recycled.
     #[cfg(any(feature = "deflate", feature = "zlib"))]
     recycle: Option<Pool>,
 }
 
 impl FlateDecompress {
-    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, multi_stream: bool, pool: Option<Pool>) -> Self {
+    pub(crate) fn new(wrapper: Wrapper, limits: FormatLimits, multi_stream: bool, trailing_data: TrailingData, pool: Option<Pool>) -> Self {
         // Only containers whose reset restores their framing can be recycled.
         let pool = pool.filter(|_| wrapper.reset_restores_framing());
         let decompress = Self::checkout(wrapper, pool.as_ref());
@@ -111,6 +118,8 @@ impl FlateDecompress {
             wrapper,
             limits,
             multi_stream,
+            trailing_data,
+            needs_reset: false,
             #[cfg(any(feature = "deflate", feature = "zlib"))]
             recycle: pool,
         }
@@ -145,7 +154,22 @@ impl Drop for FlateDecompress {
 }
 
 impl Codec for FlateDecompress {
-    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _last_input: bool) -> Result<(Step, usize, usize)> {
+    fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+        if self.needs_reset {
+            match self.wrapper {
+                #[cfg(feature = "deflate")]
+                Wrapper::Raw => self.engine().reset(false),
+                #[cfg(feature = "zlib")]
+                Wrapper::Zlib => self.engine().reset(true),
+                #[cfg(feature = "gzip")]
+                Wrapper::Gzip => {
+                    // `Decompress::reset` cannot express gzip framing.
+                    self.decompress = Some(self.wrapper.decompressor());
+                }
+            }
+            self.needs_reset = false;
+        }
+
         let wrapper = self.wrapper;
         let decompress = self.engine();
         let before_in = decompress.total_in();
@@ -169,22 +193,28 @@ impl Codec for FlateDecompress {
         Ok((step, consumed, produced))
     }
 
-    fn stream_ended(&mut self, more_input_available: bool) -> bool {
-        if !self.multi_stream || !more_input_available {
-            return true;
+    fn stream_ended(&mut self) -> Result<StreamEnd> {
+        if !self.multi_stream {
+            return Ok(match self.trailing_data {
+                TrailingData::Preserve => StreamEnd::Complete,
+                TrailingData::Reject => StreamEnd::AwaitEof,
+            });
         }
 
-        // Another stream follows. The engine must be replaced rather than reset: `Decompress::reset`
-        // takes a `bool` that selects between raw deflate and zlib, and so cannot express gzip
-        // framing (which the engine compresses as `window_bits + 16`). Resetting a gzip decompressor
-        // silently drops it to raw deflate, and the next member then fails with "invalid block
-        // type".
-        self.decompress = Some(self.wrapper.decompressor());
-        false
+        self.needs_reset = true;
+        Ok(StreamEnd::NextStream)
     }
 
-    fn check_limits(&self, total_in: u64, total_out: u64) -> Result<()> {
-        self.limits.check(total_in, total_out)
+    fn check_limits(&self, total_in: u64, total_out: u64, streams: u64) -> Result<()> {
+        self.limits.check(total_in, total_out, streams)
+    }
+
+    fn remaining_output(&self, total_out: u64) -> Option<u64> {
+        self.limits.remaining_output(total_out)
+    }
+
+    fn max_streams(&self) -> Option<u64> {
+        self.limits.max_streams()
     }
 }
 
@@ -201,7 +231,9 @@ mod tests {
         for wrapper in [Wrapper::Raw, Wrapper::Zlib, Wrapper::Gzip] {
             let mut codec = FlateCompress::new(wrapper, Level::DEFAULT, None);
             let mut out = [MaybeUninit::uninit(); 64];
-            let (_, _, produced) = codec.step(b"header check", &mut out, true).expect("compression succeeds");
+            let (_, _, produced) = codec
+                .step(b"header check", &mut out, Operation::Finish)
+                .expect("compression succeeds");
 
             // SAFETY: the engine reported initializing `produced` bytes.
             let bytes = unsafe { std::slice::from_raw_parts(out.as_ptr().cast::<u8>(), produced) };

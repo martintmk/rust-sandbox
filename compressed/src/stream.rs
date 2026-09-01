@@ -17,6 +17,9 @@ use crate::compression::{Compress, Compression, Decompress};
 use crate::error::{Error, Result};
 use crate::output::Output;
 
+/// Bounds the amount of immediately-ready work one `poll_next` performs.
+const MAX_OPERATIONS_PER_POLL: usize = 64;
+
 /// Drives a compression operation from a source stream.
 ///
 /// The source is polled only when the operation has nothing left to give, so a slow consumer never
@@ -40,20 +43,24 @@ where
         return Poll::Ready(None);
     }
 
-    loop {
+    for _ in 0..MAX_OPERATIONS_PER_POLL {
         match compression.pull() {
             Err(error) => {
                 *finished = true;
                 return Poll::Ready(Some(Err(error)));
             }
             Ok(Output::Data(data)) => return Poll::Ready(Some(Ok(data))),
+            Ok(Output::Progress) => {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
             Ok(Output::Done) => {
                 *finished = true;
                 return Poll::Ready(None);
             }
             Ok(Output::NeedInput) => match source.as_mut().poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(None) => compression.finish(),
+                Poll::Ready(None) => compression.end_input(),
                 Poll::Ready(Some(Ok(chunk))) => {
                     if let Err(error) = compression.push(chunk) {
                         *finished = true;
@@ -67,6 +74,9 @@ where
             },
         }
     }
+
+    cx.waker().wake_by_ref();
+    Poll::Pending
 }
 
 pin_project! {
@@ -109,6 +119,14 @@ pin_project! {
     }
 }
 
+impl<S, C> CompressionStream<S, C> {
+    /// Returns the source stream and compression operation.
+    #[must_use]
+    pub fn into_parts(self) -> (S, C) {
+        (self.source, self.compression)
+    }
+}
+
 impl<S, C> CompressionStream<S, C>
 where
     C: Compression<Mode = Compress>,
@@ -140,6 +158,9 @@ where
     /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()], which bounds the
     /// expansion ratio but not the total output. For an untrusted source, build the decompressor with
     /// its `builder` and set a limit the caller can actually afford.
+    ///
+    /// Output chunks are provisional until the stream ends, because a checksum or trailer can
+    /// reject the compressed stream after earlier bytes have been returned.
     ///
     /// # Examples
     ///
@@ -197,12 +218,17 @@ where
 
 #[cfg(all(test, feature = "gzip"))]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use bytesbuf::BytesBuf;
     use bytesbuf::mem::GlobalPool;
     use futures::executor::block_on;
+    use futures::task::noop_waker;
     use futures::{StreamExt, stream};
 
     use super::*;
+    use crate::compression::ProgressCompression;
     use crate::format::Format;
     use crate::{DecompressionLimits, Level, gzip};
 
@@ -289,6 +315,21 @@ mod tests {
     }
 
     #[test]
+    fn decompresses_members_delivered_as_separate_source_items() {
+        let memory = GlobalPool::new();
+        let first = crate::gzip::compress(view(b"first"), memory.clone()).expect("compression succeeds");
+        let second = crate::gzip::compress(view(b"second"), memory.clone()).expect("compression succeeds");
+
+        let plain = collect(CompressionStream::decompress(
+            ok_stream(vec![first, second]),
+            gzip::Decompressor::new(memory),
+        ))
+        .expect("both members decompress");
+
+        assert_eq!(plain.to_vec(), b"firstsecond".to_vec());
+    }
+
+    #[test]
     fn reports_a_failing_source_as_a_source_error() {
         let failing = stream::iter(vec![Err(std::io::Error::other("transport died"))]);
 
@@ -363,7 +404,7 @@ mod tests {
         let memory = GlobalPool::new();
         let payload = b"the quick brown fox ".repeat(400);
 
-        let compressor = gzip::Compressor::builder().level(Level::BEST).build(memory.clone());
+        let compressor = gzip::Compressor::builder().level(Level::HIGH).build(memory.clone());
         let gzip = collect(CompressionStream::compress(ok_stream(vec![view(&payload)]), compressor)).expect("compression succeeds");
 
         let plain = collect(CompressionStream::decompress(
@@ -407,6 +448,60 @@ mod tests {
         let gzip = collect(CompressionStream::compress(source, gzip::Compressor::new(GlobalPool::new()))).expect("compression succeeds");
 
         assert_eq!(gzip.range(0..2).to_vec(), vec![0x1f, 0x8b]);
+    }
+
+    #[test]
+    fn bounds_immediately_ready_empty_source_items_per_poll() {
+        struct ReadyEmpty {
+            polls: Arc<AtomicUsize>,
+        }
+
+        impl Stream for ReadyEmpty {
+            type Item = std::result::Result<BytesView, std::io::Error>;
+
+            fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                self.polls.fetch_add(1, Ordering::Relaxed);
+                Poll::Ready(Some(Ok(BytesView::new())))
+            }
+        }
+
+        let polls = Arc::new(AtomicUsize::new(0));
+        let source = ReadyEmpty { polls: Arc::clone(&polls) };
+        let mut stream = Box::pin(CompressionStream::compress(source, gzip::Compressor::new(GlobalPool::new())));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let mut yielded = false;
+        for _ in 0..4 {
+            if stream.as_mut().poll_next(&mut cx).is_pending() {
+                yielded = true;
+                break;
+            }
+        }
+
+        assert!(yielded, "the adapter must yield after a bounded amount of ready work");
+        assert_eq!(polls.load(Ordering::Relaxed), MAX_OPERATIONS_PER_POLL);
+    }
+
+    #[test]
+    fn progress_yields_after_one_codec_pull() {
+        let pulls = Arc::new(AtomicUsize::new(0));
+        let source = stream::pending::<std::result::Result<BytesView, std::io::Error>>();
+        let mut stream = Box::pin(CompressionStream::compress(source, ProgressCompression::new(Arc::clone(&pulls))));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        assert_eq!(pulls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn into_parts_returns_the_concrete_operation() {
+        let source = ok_stream(Vec::new());
+        let stream = CompressionStream::compress(source, gzip::Compressor::new(GlobalPool::new()));
+        let (_source, compressor): (_, gzip::Compressor) = stream.into_parts();
+
+        assert_eq!(compressor.total_in(), 0);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Streaming compression and decompression over [`bytesbuf`][__link0] byte sequences.
 
 Five formats are available, each behind a cargo feature of its own: `deflate`, `zlib`,
-`gzip`, `brotli` and `zstd`. Each lives in its own module and exposes the same six items,
+`gzip`, `brotli` and `zstd`. Each lives in its own module and exposes the same seven items,
 so moving between them is a change of import rather than a change of code.
 
 Compression engines normally speak `std::io::Read` and `std::io::Write`, which assume a single
@@ -50,9 +50,10 @@ let mut plain = BytesBuf::new();
 loop {
     match decompressor.pull()? {
         Output::Data(data) => plain.put_bytes(data),
+        Output::Progress => {}
         Output::NeedInput => match chunks.next() {
             Some(chunk) => decompressor.push(chunk)?,
-            None => decompressor.finish(),
+            None => decompressor.end_input(),
         },
         Output::Done => break,
     }
@@ -63,10 +64,11 @@ assert_eq!(plain.consume_all().to_vec(), b"streamed".to_vec());
 
 ## Choosing a format
 
-The [`Compression`][__link5] trait describes the contract independently of the format and direction,
-so code can be written once and used with any implementation. When the format is only known at runtime —
-from a `Content-Encoding` header, say — [`format::Format`][__link7] resolves it and its builders produce a boxed
-operation, which is itself a `Compression` and so fits anywhere a concrete one does:
+The [`Compression`][__link5] trait describes the contract independently of the format and direction, so
+code can be written once and used with any implementation. When the format is only known at
+runtime — from a `Content-Encoding` token, say — [`format::Format`][__link6] resolves it and its builders
+produce a boxed operation, which is itself a `Compression` and so fits anywhere a concrete one
+does:
 
 ```rust
 use bytesbuf::BytesView;
@@ -74,20 +76,17 @@ use bytesbuf::mem::GlobalPool;
 use compressed::Level;
 use compressed::format::Format;
 
-// Pick the encoding the client ranked highest among those this build supports.
-let format = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8, deflate;q=0.5")
-    .next()
-    .expect("no mutually supported encoding");
+let format = Format::from_content_encoding("gzip").expect("this build supports gzip");
 
 let memory = GlobalPool::new();
 let compressed = format.compress(
-    BytesView::copied_from_slice(b"negotiated", &memory),
+    BytesView::copied_from_slice(b"runtime selected", &memory),
     memory.clone(),
 )?;
 
 assert_eq!(
     format.decompress(compressed, memory)?.to_vec(),
-    b"negotiated".to_vec()
+    b"runtime selected".to_vec()
 );
 ```
 
@@ -95,7 +94,7 @@ assert_eq!(
 
 Building a compressor allocates and initialises a substantial amount of state — on a small
 message, as much work as the compression itself. A service that compresses many messages should
-hold one [`Pool`][__link8], clone it into each compressor, and let the engine return to the pool when the
+hold one [`Pool`][__link7], clone it into each compressor, and let the engine return to the pool when the
 compressor drops. The saving is roughly fixed per message, so it matters most for small bodies.
 
 ```rust
@@ -110,7 +109,7 @@ let compressor = gzip::Compressor::builder().pool(codecs.clone()).build(memory);
 ```
 
 The pool is transparent — it recycles what is worth recycling and builds the rest — so calling
-code never has to know which engines benefit. See [`Pool`][__link9] for what is pooled today.
+code never has to know which engines benefit. See [`Pool`][__link8] for what is pooled today.
 
 ## Security
 
@@ -120,7 +119,9 @@ untrusted data is a memory-exhaustion vector.
 The codecs themselves never accumulate: each `pull` hands back one bounded chunk, so nothing in
 this crate grows with the length of the stream. The exposure belongs to whatever the caller does
 with those chunks, which is why the limits matter most for the accumulating conveniences —
-`compress`, `decompress`, and [`format::Format::compress`][__link10] / [`format::Format::decompress`][__link11].
+`compress`, `decompress`, and [`format::Format::compress`][__link9] / [`format::Format::decompress`][__link10].
+Use each format’s `decompress_with_limits` or [`format::Format::decompress_with_limits`][__link11] for
+untrusted in-memory input.
 
 Each format declares its own default bounds, because a single portable ratio cannot serve both
 families. Deflate cannot expand by more than about 1032x — a structural property of the format —
@@ -135,8 +136,11 @@ calibration on another.
 
 **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
 [`DecompressionLimits::with_max_output_len`][__link14] to whatever the caller can actually afford to
-buffer. Use [`DecompressionLimits::UNLIMITED`][__link15] only for sources you trust as much as your own
-process.
+buffer, and [`DecompressionLimits::with_max_streams`][__link15] when concatenated streams are accepted.
+Use [`DecompressionLimits::UNLIMITED`][__link16] only for sources you trust as much as your own process.
+
+Streaming decompression can yield bytes before a final checksum or trailer has been verified.
+Treat those bytes as provisional until the operation reports [`Output::Done`][__link17].
 
 ## Features
 
@@ -148,26 +152,30 @@ Every format is a separate feature, so a build compiles only the engines it name
 * `zlib` — the `zlib` module and `Format::Zlib`, via `flate2`.
 * `brotli` — the `brotli` module and `Format::Brotli`, via the pure-Rust `brotli` crate.
 * `zstd` — the `zstd` module and `Format::Zstd`, via `zstd-safe`.
-* `futures-stream` — `CompressionStream`, presenting compression and decompression as a
+* `futures-stream` — [`CompressionStream`][__link18], presenting compression and decompression as a
   `futures_core::Stream` over any stream of byte sequences.
 
 The deflate-family features share one dependency, so enabling all three costs no more than one.
 A build that needs only `brotli` or only `zstd` never compiles `flate2` at all.
 
 
- [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbj3Hl1rrs_sobZ1IUJJYazA8bnP7KYcDLTC0bZWjznYcnHYJhZIKCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4w
+ [__cargo_doc2readme_dependencies_info]: ggGmYW0CYXZlMC43LjJhdIQb2o_SNWoR6AAb3_T-k0ODPHwbnQW7uS_D2XsbjVFFtK-lC3BhYvVhcoQbQs_5tV7vpJ8bUM6RlfxnRaAb61tn7gjzhnobpbh5s-yd8aNhZIKCaGJ5dGVzYnVmZTAuOS4wgmpjb21wcmVzc2VkZTAuMS4w
  [__link0]: https://crates.io/crates/bytesbuf/0.9.0
  [__link1]: https://docs.rs/bytesbuf/0.9.0/bytesbuf/?search=BytesView
- [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::compress
- [__link11]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::decompress
+ [__link10]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::decompress
+ [__link11]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::decompress_with_limits
  [__link12]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits
  [__link13]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::default
  [__link14]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_output_len
- [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
+ [__link15]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::with_max_streams
+ [__link16]: https://docs.rs/compressed/0.1.0/compressed/?search=DecompressionLimits::UNLIMITED
+ [__link17]: https://docs.rs/compressed/0.1.0/compressed/?search=Output::Done
+ [__link18]: https://docs.rs/compressed/0.1.0/compressed/?search=CompressionStream
  [__link2]: https://docs.rs/bytesbuf/0.9.0/bytesbuf/?search=BytesBuf
  [__link3]: https://docs.rs/compressed/0.1.0/compressed/?search=gzip::Compressor
  [__link4]: https://docs.rs/compressed/0.1.0/compressed/?search=gzip::Decompressor
  [__link5]: https://docs.rs/compressed/0.1.0/compressed/?search=Compression
- [__link7]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format
+ [__link6]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format
+ [__link7]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
  [__link8]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
- [__link9]: https://docs.rs/compressed/0.1.0/compressed/?search=Pool
+ [__link9]: https://docs.rs/compressed/0.1.0/compressed/?search=format::Format::compress

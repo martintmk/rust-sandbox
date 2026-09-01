@@ -3,7 +3,7 @@
 //! Streaming compression and decompression over [`bytesbuf`] byte sequences.
 //!
 //! Five formats are available, each behind a cargo feature of its own: `deflate`, `zlib`,
-//! `gzip`, `brotli` and `zstd`. Each lives in its own module and exposes the same six items,
+//! `gzip`, `brotli` and `zstd`. Each lives in its own module and exposes the same seven items,
 //! so moving between them is a change of import rather than a change of code.
 //!
 //! Compression engines normally speak `std::io::Read` and `std::io::Write`, which assume a single
@@ -54,9 +54,10 @@
 //! loop {
 //!     match decompressor.pull()? {
 //!         Output::Data(data) => plain.put_bytes(data),
+//!         Output::Progress => {}
 //!         Output::NeedInput => match chunks.next() {
 //!             Some(chunk) => decompressor.push(chunk)?,
-//!             None => decompressor.finish(),
+//!             None => decompressor.end_input(),
 //!         },
 //!         Output::Done => break,
 //!     }
@@ -69,9 +70,10 @@
 //! # Choosing a format
 //!
 //! The [`Compression`] trait describes the contract independently of the format and direction, so
-//! code can be written once and used with any implementation. When the format is only known at runtime —
-//! from a `Content-Encoding` header, say — [`format::Format`] resolves it and its builders produce a boxed
-//! operation, which is itself a `Compression` and so fits anywhere a concrete one does:
+//! code can be written once and used with any implementation. When the format is only known at
+//! runtime — from a `Content-Encoding` token, say — [`format::Format`] resolves it and its builders
+//! produce a boxed operation, which is itself a `Compression` and so fits anywhere a concrete one
+//! does:
 //!
 //! ```
 //! use bytesbuf::BytesView;
@@ -79,20 +81,17 @@
 //! use compressed::Level;
 //! use compressed::format::Format;
 //!
-//! // Pick the encoding the client ranked highest among those this build supports.
-//! let format = Format::from_accept_encoding("br;q=1.0, gzip;q=0.8, deflate;q=0.5")
-//!     .next()
-//!     .expect("no mutually supported encoding");
+//! let format = Format::from_content_encoding("gzip").expect("this build supports gzip");
 //!
 //! let memory = GlobalPool::new();
 //! let compressed = format.compress(
-//!     BytesView::copied_from_slice(b"negotiated", &memory),
+//!     BytesView::copied_from_slice(b"runtime selected", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
 //!     format.decompress(compressed, memory)?.to_vec(),
-//!     b"negotiated".to_vec()
+//!     b"runtime selected".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
 //! ```
@@ -128,6 +127,8 @@
 //! this crate grows with the length of the stream. The exposure belongs to whatever the caller does
 //! with those chunks, which is why the limits matter most for the accumulating conveniences —
 //! `compress`, `decompress`, and [`format::Format::compress`] / [`format::Format::decompress`].
+//! Use each format's `decompress_with_limits` or [`format::Format::decompress_with_limits`] for
+//! untrusted in-memory input.
 //!
 //! Each format declares its own default bounds, because a single portable ratio cannot serve both
 //! families. Deflate cannot expand by more than about 1032x — a structural property of the format —
@@ -142,8 +143,11 @@
 //!
 //! **A ratio limit is therefore a coarse backstop, not real protection.** For untrusted input, set
 //! [`DecompressionLimits::with_max_output_len`] to whatever the caller can actually afford to
-//! buffer. Use [`DecompressionLimits::UNLIMITED`] only for sources you trust as much as your own
-//! process.
+//! buffer, and [`DecompressionLimits::with_max_streams`] when concatenated streams are accepted.
+//! Use [`DecompressionLimits::UNLIMITED`] only for sources you trust as much as your own process.
+//!
+//! Streaming decompression can yield bytes before a final checksum or trailer has been verified.
+//! Treat those bytes as provisional until the operation reports [`Output::Done`].
 //!
 //! # Features
 //!
@@ -179,6 +183,7 @@ mod level;
 mod limits;
 mod output;
 mod pool;
+mod trailing;
 #[cfg(feature = "zlib")]
 pub mod zlib;
 #[cfg(feature = "zstd")]
@@ -187,7 +192,7 @@ pub mod zstd;
 #[cfg(feature = "futures-stream")]
 mod stream;
 
-pub use compression::{Compress, Compression, Decompress};
+pub use compression::{Compress, Compressing, Compression, Decompress, Decompressing};
 pub use error::{Error, Result};
 pub use level::Level;
 pub use limits::DecompressionLimits;
@@ -195,3 +200,4 @@ pub use output::Output;
 pub use pool::Pool;
 #[cfg(feature = "futures-stream")]
 pub use stream::CompressionStream;
+pub use trailing::TrailingData;
