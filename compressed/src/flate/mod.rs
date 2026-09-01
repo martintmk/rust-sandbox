@@ -17,7 +17,7 @@ use crate::limits::FormatLimits;
 /// Deflate cannot expand its input by more than about 1032x — a structural property of the format,
 /// not a tuning choice — so a single stream is inherently bounded. Measured worst case for 1 MiB of
 /// zeros is 1015x, so this sits just above what the format can actually produce and never rejects
-/// data deflate could legitimately have generated. No cap on total size, so large streams decode.
+/// data deflate could legitimately have generated. No cap on total size, so large streams decompress.
 pub(crate) const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(1_100), None);
 
 /// The deflate window size exponent. 15 is the maximum, giving the best compression ratio.
@@ -68,7 +68,7 @@ impl Wrapper {
     /// Whether a recycled decompressor keeps this container's framing after a reset.
     ///
     /// `Decompress::reset` takes a boolean selecting raw deflate or zlib, so it cannot express
-    /// gzip, which the engine encodes as `window_bits + 16`. Recycling a gzip decompressor would
+    /// gzip, which the engine compresses as `window_bits + 16`. Recycling a gzip decompressor would
     /// silently drop it to raw deflate, so gzip decompressors are never pooled.
     pub(crate) fn reset_restores_framing(self) -> bool {
         match self {

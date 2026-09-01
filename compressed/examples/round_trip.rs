@@ -14,20 +14,20 @@ fn main() -> Result<()> {
     let memory = GlobalPool::new();
     let original = b"the quick brown fox jumps over the lazy dog. ".repeat(64);
 
-    let encoded = gzip::compress(BytesView::copied_from_slice(&original, &memory), memory.clone())?;
-    let decoded = gzip::decompress(encoded.clone(), memory.clone())?;
+    let compressed = gzip::compress(BytesView::copied_from_slice(&original, &memory), memory.clone())?;
+    let decompressed = gzip::decompress(compressed.clone(), memory.clone())?;
 
-    assert_eq!(decoded.to_vec(), original);
-    println!("gzip: {} -> {} bytes", original.len(), encoded.len());
+    assert_eq!(decompressed.to_vec(), original);
+    println!("gzip: {} -> {} bytes", original.len(), compressed.len());
 
     // The same payload through a format chosen at run time.
     for &format in Format::ALL {
         let input = BytesView::copied_from_slice(&original, &memory);
-        let encoded = format.compress(input, memory.clone())?;
-        let decoded = format.decompress(encoded.clone(), memory.clone())?;
+        let compressed = format.compress(input, memory.clone())?;
+        let decompressed = format.decompress(compressed.clone(), memory.clone())?;
 
-        assert_eq!(decoded.to_vec(), original);
-        println!("{format:?}: {} bytes", encoded.len());
+        assert_eq!(decompressed.to_vec(), original);
+        println!("{format:?}: {} bytes", compressed.len());
     }
 
     Ok(())

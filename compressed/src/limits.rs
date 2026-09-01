@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
         not(test),
         not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
     ),
-    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+    expect(dead_code, reason = "only the decompressors resolve and enforce bounds, and no format is enabled")
 )]
 const RATIO_FLOOR_BYTES: u64 = 32 * 1024;
 
@@ -37,7 +37,7 @@ impl<T> Limit<T> {
             not(test),
             not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
         ),
-        expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+        expect(dead_code, reason = "only the decompressors resolve and enforce bounds, and no format is enabled")
     )]
     fn resolve(self, default: Option<T>) -> Option<T> {
         match self {
@@ -50,7 +50,7 @@ impl<T> Limit<T> {
 
 /// Bounds on how much data decompression may produce.
 ///
-/// Compressed data can expand by orders of magnitude, so a decoder pointed at untrusted input is a
+/// Compressed data can expand by orders of magnitude, so a decompressor pointed at untrusted input is a
 /// memory-exhaustion vector.
 ///
 /// This type carries *overrides*, not values. Each bound starts unset, meaning the format applies
@@ -63,7 +63,7 @@ impl<T> Limit<T> {
 /// | `brotli` | 250 000x | brotli reaches 80 660x on a megabyte of zeros, and 21 028x on a repeated sentence — all legitimate |
 /// | `zstd` | 250 000x | zstd has no structural ceiling either, so it needs the same loose bound |
 ///
-/// No format caps total output size by default, so a multi-gigabyte stream decodes.
+/// No format caps total output size by default, so a multi-gigabyte stream decompresses.
 ///
 /// # Security
 ///
@@ -111,7 +111,7 @@ impl DecompressionLimits {
     /// # Security
     ///
     /// Only use this when the compressed data comes from a source you trust to the same degree you
-    /// trust your own process. An unbounded decoder fed a decompression bomb will consume memory
+    /// trust your own process. An unbounded decompressor fed a decompression bomb will consume memory
     /// until the allocator gives up.
     pub const UNLIMITED: Self = Self {
         max_ratio: Limit::Unlimited,
@@ -157,7 +157,7 @@ impl DecompressionLimits {
             not(test),
             not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
         ),
-        expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+        expect(dead_code, reason = "only the decompressors resolve and enforce bounds, and no format is enabled")
     )]
     pub(crate) fn resolve(self, defaults: FormatLimits) -> FormatLimits {
         FormatLimits {
@@ -169,13 +169,13 @@ impl DecompressionLimits {
 
 /// A format's bounds after the caller's overrides have been applied.
 ///
-/// Private: formats declare their defaults as constants of this type, and the decoders enforce it.
+/// Private: formats declare their defaults as constants of this type, and the decompressors enforce it.
 #[cfg_attr(
     all(
         not(test),
         not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
     ),
-    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+    expect(dead_code, reason = "only the decompressors resolve and enforce bounds, and no format is enabled")
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FormatLimits {
@@ -188,7 +188,7 @@ pub(crate) struct FormatLimits {
         not(test),
         not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))
     ),
-    expect(dead_code, reason = "only the decoders resolve and enforce bounds, and no format is enabled")
+    expect(dead_code, reason = "only the decompressors resolve and enforce bounds, and no format is enabled")
 )]
 impl FormatLimits {
     /// Declares a format's default bounds.

@@ -16,14 +16,14 @@
 //! use compressed::zstd;
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = zstd::compress(
+//! let compressed = zstd::compress(
 //!     BytesView::copied_from_slice(b"the quick brown fox", &memory),
 //!     memory.clone(),
 //! )?;
-//! assert_eq!(encoded.range(0..4).to_vec(), vec![0x28, 0xb5, 0x2f, 0xfd]);
+//! assert_eq!(compressed.range(0..4).to_vec(), vec![0x28, 0xb5, 0x2f, 0xfd]);
 //!
 //! assert_eq!(
-//!     zstd::decompress(encoded, memory)?.to_vec(),
+//!     zstd::decompress(compressed, memory)?.to_vec(),
 //!     b"the quick brown fox".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -44,15 +44,15 @@ const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(250_000), None);
 
 define_format! {
     name = "zstd",
-    encoder_codec = ZstdCompress,
-    encoder_options = EncoderOptions,
-    new_encoder = ZstdCompress::new,
-    decoder_codec = ZstdDecompress,
-    decoder_options = (),
+    compressor_codec = ZstdCompress,
+    compressor_options = CompressorOptions,
+    new_compressor = ZstdCompress::new,
+    decompressor_codec = ZstdDecompress,
+    decompressor_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decoder = |limits, multi_stream, (), pool| ZstdDecompress::new(limits, multi_stream, pool),
+    new_decompressor = |limits, multi_stream, (), pool| ZstdDecompress::new(limits, multi_stream, pool),
     multi_stream_default = true,
-    multi_stream_doc = "Sets whether concatenated zstd frames decode as one logical stream.\n\nEnabled by default, matching the `zstd` command line tool.",
+    multi_stream_doc = "Sets whether concatenated zstd frames decompress as one logical stream.\n\nEnabled by default, matching the `zstd` command line tool.",
 }
 
 /// A level on zstd's own scale, for reaching settings the portable [`Level`] does not cover.
@@ -120,9 +120,9 @@ impl From<CompressionLevel> for i32 {
     }
 }
 
-/// Zstd's format-specific encoder settings.
+/// Zstd's format-specific compressor settings.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct EncoderOptions {
+pub(crate) struct CompressorOptions {
     pub(crate) level: Option<CompressionLevel>,
 }
 
@@ -134,16 +134,16 @@ pub(crate) struct EncoderOptions {
 /// use bytesbuf::mem::GlobalPool;
 /// use compressed::zstd::{self, CompressionLevel};
 ///
-/// let encoder = zstd::Encoder::builder()
+/// let compressor = zstd::Compressor::builder()
 ///     .compression_level(CompressionLevel::new(19).expect("19 is in range"))
 ///     .build(GlobalPool::new());
-/// # let _ = encoder;
+/// # let _ = compressor;
 /// ```
-impl EncoderBuilder {
+impl CompressorBuilder {
     /// Sets the level on zstd's own scale, overriding any portable [`Level`].
     ///
     /// Use this only when you need a level the portable scale does not reach; prefer
-    /// [`level`][EncoderBuilder::level] otherwise, so the same configuration keeps working if the
+    /// [`level`][CompressorBuilder::level] otherwise, so the same configuration keeps working if the
     /// format changes.
     #[must_use]
     pub const fn compression_level(mut self, level: CompressionLevel) -> Self {

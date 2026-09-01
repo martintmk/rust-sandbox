@@ -12,7 +12,7 @@ use brotli::enc::StandardAlloc;
 use brotli::enc::encode::{BrotliEncoderOperation, BrotliEncoderStateStruct};
 use brotli::{BrotliDecompressStream, BrotliResult, BrotliState, HeapAlloc, HuffmanCode};
 
-use crate::brotli::{EncoderOptions, Mode};
+use crate::brotli::{CompressorOptions, Mode};
 use crate::engine::{Codec, Step};
 use crate::error::{Error, Result};
 use crate::level::Level;
@@ -47,7 +47,7 @@ pub(crate) struct BrotliCompress {
 }
 
 impl BrotliCompress {
-    pub(crate) fn new(level: Level, options: EncoderOptions) -> Self {
+    pub(crate) fn new(level: Level, options: CompressorOptions) -> Self {
         use brotli::enc::encode::BrotliEncoderParameter;
 
         let mut state = BrotliEncoderStateStruct::new(StandardAlloc::default());

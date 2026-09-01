@@ -5,13 +5,13 @@
 //! Every format exposes the same four types and two functions, differing only in which codec they
 //! drive and in their documentation. Generating them keeps the four modules honest — a change to
 //! the contract cannot drift between formats — without collapsing them into one type that would
-//! lose the compile-time distinction between, say, a gzip and a brotli encoder.
+//! lose the compile-time distinction between, say, a gzip and a brotli compressor.
 //!
 //! # Format-specific settings
 //!
 //! Formats are not actually identical: gzip carries optional header metadata, brotli has a window
 //! size and a content mode, zlib takes a preset dictionary. The macro handles that with an
-//! `encoder_options` / `decoder_options` type, defaulted and threaded through to the codec. A
+//! `compressor_options` / `decompressor_options` type, defaulted and threaded through to the codec. A
 //! format with no extra settings passes `()`; a format that has some declares its own options
 //! struct and writes the setters by hand in its own module, right next to the documentation that
 //! explains them.
@@ -19,21 +19,21 @@
 //! Only the portable settings appear on the runtime [`Format`][crate::Format] builders, because a
 //! builder that might produce any format cannot honour a setting that only one of them has. Code
 //! that needs both a runtime format and a format-specific setting branches on the format, uses the
-//! concrete builder, and boxes the result — which works because `Box<dyn Encoder>` is itself an
-//! [`Encoder`][crate::Encoder].
+//! concrete builder, and boxes the result — which works because a boxed [`Compression`][crate::Compression]
+//! is itself a `Compression`.
 
-/// Generates `Encoder`, `EncoderBuilder`, `Decoder`, `DecoderBuilder`, `compress` and `decompress`
+/// Generates `Compressor`, `CompressorBuilder`, `Decompressor`, `DecompressorBuilder`, `compress` and `decompress`
 /// for one format.
 macro_rules! define_format {
     (
         name = $name:literal,
-        encoder_codec = $enc_codec:ty,
-        encoder_options = $enc_options:ty,
-        new_encoder = $new_encoder:expr,
-        decoder_codec = $dec_codec:ty,
-        decoder_options = $dec_options:ty,
+        compressor_codec = $compressor_codec:ty,
+        compressor_options = $compressor_options:ty,
+        new_compressor = $new_compressor:expr,
+        decompressor_codec = $decompressor_codec:ty,
+        decompressor_options = $decompressor_options:ty,
         default_limits = $default_limits:expr,
-        new_decoder = $new_decoder:expr,
+        new_decompressor = $new_decompressor:expr,
         multi_stream_default = $multi_stream_default:expr,
         multi_stream_doc = $multi_stream_doc:literal,
     ) => {
@@ -41,9 +41,8 @@ macro_rules! define_format {
 
         use bytesbuf::BytesView;
         use bytesbuf::mem::MemoryShared;
-        // Anonymous, because this module defines its own `Encoder` and `Decoder` types; the
-        // imports exist only to bring the traits' provided methods into scope.
-        use $crate::codec::{Decoder as _, Encoder as _};
+        // Anonymous because the import exists only to bring the trait's provided methods into scope.
+        use $crate::compression::Compression as _;
         use $crate::engine::{DEFAULT_CHUNK_SIZE, Pump};
         use $crate::error::Result;
         use $crate::level::Level;
@@ -52,27 +51,27 @@ macro_rules! define_format {
 
         #[doc = concat!("Compresses a stream of byte sequences into ", $name, ".")]
         ///
-        /// A push/pull state machine: supply input with [`Encoder::push`], take output with
-        /// [`Encoder::pull`], and call [`Encoder::finish`] when there is no more input. Each pull
+        /// A push/pull state machine: supply input with [`Compressor::push`], take output with
+        /// [`Compressor::pull`], and call [`Compressor::finish`] when there is no more input. Each pull
         /// returns at most one bounded chunk, so a stream of any length can be compressed with a
         /// bounded working set.
         #[derive(Debug)]
-        pub struct Encoder {
+        pub struct Compressor {
             pump: Pump,
-            codec: $enc_codec,
+            codec: $compressor_codec,
         }
 
-        impl Encoder {
-            /// Creates an encoder at [`Level::DEFAULT`].
+        impl Compressor {
+            /// Creates a compressor at [`Level::DEFAULT`].
             #[must_use]
             pub fn new(memory: impl MemoryShared) -> Self {
                 Self::builder().build(memory)
             }
 
-            /// Starts configuring an encoder.
+            /// Starts configuring a compressor.
             #[must_use]
-            pub fn builder() -> EncoderBuilder {
-                EncoderBuilder::default()
+            pub fn builder() -> CompressorBuilder {
+                CompressorBuilder::default()
             }
 
             /// Supplies more uncompressed input.
@@ -80,8 +79,8 @@ macro_rules! define_format {
             /// # Errors
             ///
             /// Returns an [`Error::is_invalid_state`][crate::Error::is_invalid_state] error if
-            /// input is still pending from a previous push, or if [`Encoder::finish`] has already
-            /// been called. Drain pending input with [`Encoder::pull`] until it reports
+            /// input is still pending from a previous push, or if [`Compressor::finish`] has already
+            /// been called. Drain pending input with [`Compressor::pull`] until it reports
             /// [`Output::NeedInput`] first.
             pub fn push(&mut self, input: BytesView) -> Result<()> {
                 self.pump.push(input)
@@ -116,9 +115,9 @@ macro_rules! define_format {
             }
         }
 
-        /// Configures an [`Encoder`].
+        /// Configures an [`Compressor`].
         #[derive(Debug, Clone)]
-        pub struct EncoderBuilder {
+        pub struct CompressorBuilder {
             level: Level,
             chunk_size: NonZeroUsize,
             pool: Option<$crate::Pool>,
@@ -126,10 +125,10 @@ macro_rules! define_format {
             ///
             /// The generated builder never reads this beyond handing it to the codec; the format's
             /// own module adds the setters that populate it.
-            options: $enc_options,
+            options: $compressor_options,
         }
 
-        impl EncoderBuilder {
+        impl CompressorBuilder {
             #[doc = concat!("Sets the compression level, mapped onto ", $name, "'s native range.")]
             #[must_use]
             pub const fn level(mut self, level: Level) -> Self {
@@ -137,9 +136,9 @@ macro_rules! define_format {
                 self
             }
 
-            /// Sets how much output a single [`Encoder::pull`] produces before returning.
+            /// Sets how much output a single [`Compressor::pull`] produces before returning.
             ///
-            /// This bounds the encoder's working set. Larger chunks reduce per-call overhead;
+            /// This bounds the compressor's working set. Larger chunks reduce per-call overhead;
             /// smaller chunks reduce peak memory and latency.
             #[must_use]
             pub const fn output_chunk_size(mut self, bytes: NonZeroUsize) -> Self {
@@ -149,32 +148,32 @@ macro_rules! define_format {
 
             /// Recycles engine state through a shared [`Pool`][crate::Pool].
             ///
-            /// Building a compressor is not free, so a service that encodes many messages should
-            /// hand every encoder the same pool. The engine is returned when the encoder is
-            /// dropped. Without a pool each encoder builds its own engine, which is the default.
+            /// Building a compressor is not free, so a service that compresses many messages should
+            /// hand every compressor the same pool. The engine is returned when the compressor is
+            /// dropped. Without a pool each compressor builds its own engine, which is the default.
             #[must_use]
             pub fn pool(mut self, pool: $crate::Pool) -> Self {
                 self.pool = Some(pool);
                 self
             }
 
-            /// Builds the encoder, drawing its output buffers from `memory`.
+            /// Builds the compressor, drawing its output buffers from `memory`.
             #[must_use]
-            pub fn build(self, memory: impl MemoryShared) -> Encoder {
-                Encoder {
+            pub fn build(self, memory: impl MemoryShared) -> Compressor {
+                Compressor {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_encoder(self.level, self.options, self.pool),
+                    codec: $new_compressor(self.level, self.options, self.pool),
                 }
             }
         }
 
-        impl Default for EncoderBuilder {
+        impl Default for CompressorBuilder {
             fn default() -> Self {
                 Self {
                     level: Level::DEFAULT,
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     pool: None,
-                    options: <$enc_options>::default(),
+                    options: <$compressor_options>::default(),
                 }
             }
         }
@@ -183,25 +182,25 @@ macro_rules! define_format {
         ///
         /// # Security
         ///
-        /// Compressed data can expand by orders of magnitude, so a decoder pointed at untrusted
+        /// Compressed data can expand by orders of magnitude, so a decompressor pointed at untrusted
         /// input is a memory-exhaustion vector. This format's own default bounds apply unless
-        /// [`DecoderBuilder::limits`] overrides them.
+        /// [`DecompressorBuilder::limits`] overrides them.
         #[derive(Debug)]
-        pub struct Decoder {
+        pub struct Decompressor {
             pump: Pump,
-            codec: $dec_codec,
+            codec: $decompressor_codec,
         }
 
-        impl Decoder {
+        impl Decompressor {
             #[must_use]
             pub fn new(memory: impl MemoryShared) -> Self {
                 Self::builder().build(memory)
             }
 
-            /// Starts configuring a decoder.
+            /// Starts configuring a decompressor.
             #[must_use]
-            pub fn builder() -> DecoderBuilder {
-                DecoderBuilder::default()
+            pub fn builder() -> DecompressorBuilder {
+                DecompressorBuilder::default()
             }
 
             /// Supplies more compressed input.
@@ -209,7 +208,7 @@ macro_rules! define_format {
             /// # Errors
             ///
             /// Returns an [`Error::is_invalid_state`][crate::Error::is_invalid_state] error if
-            /// input is still pending from a previous push, or if [`Decoder::finish`] has already
+            /// input is still pending from a previous push, or if [`Decompressor::finish`] has already
             /// been called.
             pub fn push(&mut self, input: BytesView) -> Result<()> {
                 self.pump.push(input)
@@ -217,7 +216,7 @@ macro_rules! define_format {
 
             /// Signals that no further input will be supplied.
             ///
-            /// If the input ended part-way through a stream, the next [`Decoder::pull`] reports
+            /// If the input ended part-way through a stream, the next [`Decompressor::pull`] reports
             /// [`Error::is_unexpected_end_of_stream`][crate::Error::is_unexpected_end_of_stream].
             pub fn finish(&mut self) {
                 self.pump.finish();
@@ -249,18 +248,18 @@ macro_rules! define_format {
             }
         }
 
-        /// Configures a [`Decoder`].
+        /// Configures a [`Decompressor`].
         #[derive(Debug, Clone)]
-        pub struct DecoderBuilder {
+        pub struct DecompressorBuilder {
             limits: DecompressionLimits,
             chunk_size: NonZeroUsize,
             multi_stream: bool,
             pool: Option<$crate::Pool>,
             /// Settings that only this format has. `()` for formats with none.
-            options: $dec_options,
+            options: $decompressor_options,
         }
 
-        impl DecoderBuilder {
+        impl DecompressorBuilder {
             #[doc = concat!("Overrides the bounds on how much data decompression may produce.")]
             ///
             /// Bounds left unset on the passed value keep this format's own defaults.
@@ -270,7 +269,7 @@ macro_rules! define_format {
                 self
             }
 
-            /// Sets how much output a single [`Decoder::pull`] produces before returning.
+            /// Sets how much output a single [`Decompressor::pull`] produces before returning.
             #[must_use]
             pub const fn output_chunk_size(mut self, bytes: NonZeroUsize) -> Self {
                 self.chunk_size = bytes;
@@ -282,7 +281,7 @@ macro_rules! define_format {
             /// When enabled, any bytes following a complete stream must themselves form another
             /// valid stream; trailing padding is reported as corrupt data. Disable this to stop
             /// after the first stream and ignore whatever follows, using
-            /// [`Decoder::total_in`] to find where it ended.
+            /// [`Decompressor::total_in`] to find where it ended.
             #[must_use]
             pub const fn multi_stream(mut self, enabled: bool) -> Self {
                 self.multi_stream = enabled;
@@ -291,7 +290,7 @@ macro_rules! define_format {
 
             /// Recycles engine state through a shared [`Pool`][crate::Pool].
             ///
-            /// The engine is returned when the decoder is dropped. Without a pool each decoder
+            /// The engine is returned when the decompressor is dropped. Without a pool each decompressor
             /// builds its own engine, which is the default. See [`Pool`][crate::Pool] for which
             /// engines are actually recycled.
             #[must_use]
@@ -300,12 +299,12 @@ macro_rules! define_format {
                 self
             }
 
-            /// Builds the decoder, drawing its output buffers from `memory`.
+            /// Builds the decompressor, drawing its output buffers from `memory`.
             #[must_use]
-            pub fn build(self, memory: impl MemoryShared) -> Decoder {
-                Decoder {
+            pub fn build(self, memory: impl MemoryShared) -> Decompressor {
+                Decompressor {
                     pump: Pump::new(memory, self.chunk_size),
-                    codec: $new_decoder(
+                    codec: $new_decompressor(
                         self.limits.resolve($default_limits),
                         self.multi_stream,
                         self.options,
@@ -315,40 +314,40 @@ macro_rules! define_format {
             }
         }
 
-        impl Default for DecoderBuilder {
+        impl Default for DecompressorBuilder {
             fn default() -> Self {
                 Self {
                     limits: DecompressionLimits::new(),
                     chunk_size: NonZeroUsize::new(DEFAULT_CHUNK_SIZE).unwrap_or(NonZeroUsize::MIN),
                     multi_stream: $multi_stream_default,
                     pool: None,
-                    options: <$dec_options>::default(),
+                    options: <$decompressor_options>::default(),
                 }
             }
         }
 
         #[doc = concat!("Compresses a complete byte sequence into ", $name, ".")]
         ///
-        /// Uses [`Level::DEFAULT`]. Prefer [`Encoder`] for data that arrives incrementally; this
+        /// Uses [`Level::DEFAULT`]. Prefer [`Compressor`] for data that arrives incrementally; this
         /// convenience buffers the entire result before returning.
         ///
         /// # Errors
         ///
         /// Returns an error if the underlying compression engine fails.
         pub fn compress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-            Encoder::new(memory).encode(input)
+            Compressor::new(memory).compress(input)
         }
 
         #[doc = concat!("Decompresses a complete ", $name, " stream that is already in memory.")]
         ///
-        /// Applies this format's default bounds. Prefer [`Decoder`] for data that arrives
+        /// Applies this format's default bounds. Prefer [`Decompressor`] for data that arrives
         /// incrementally; this convenience buffers the entire result before returning.
         ///
         /// # Errors
         ///
         /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
         pub fn decompress(input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-            Decoder::new(memory).decode(input)
+            Decompressor::new(memory).decompress(input)
         }
     };
 }

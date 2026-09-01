@@ -31,10 +31,10 @@ pub(crate) struct EngineKey {
 ///
 /// Building a compressor allocates and initialises a substantial amount of state, and on a small
 /// message that setup can cost as much as the compression itself. A service that builds a fresh
-/// encoder per message therefore spends much of its compression budget getting ready to compress.
+/// compressor per message therefore spends much of its compression budget getting ready to compress.
 /// Recycling engines removes that cost.
 ///
-/// The saving is roughly fixed per encoder, so it matters most for small messages and fades as
+/// The saving is roughly fixed per compressor, so it matters most for small messages and fades as
 /// bodies grow — which suits ordinary request and response traffic, where most bodies are small.
 /// Measure your own workload before and after: [`Pool::with_capacity`] accepts a capacity of zero,
 /// which disables recycling and gives you the baseline to compare against.
@@ -47,7 +47,7 @@ pub(crate) struct EngineKey {
 /// ```
 /// use bytesbuf::BytesView;
 /// use bytesbuf::mem::GlobalPool;
-/// use compressed::{Encoder, Level, Pool, gzip};
+/// use compressed::{Compression as _, Level, Pool, gzip};
 ///
 /// #[derive(Clone)]
 /// struct HttpClient {
@@ -57,12 +57,12 @@ pub(crate) struct EngineKey {
 ///
 /// impl HttpClient {
 ///     fn compress_body(&self, body: BytesView) -> compressed::Result<BytesView> {
-///         gzip::Encoder::builder()
+///         gzip::Compressor::builder()
 ///             .level(Level::DEFAULT)
 ///             .pool(self.codecs.clone())
 ///             .build(self.memory.clone())
-///             .encode(body)
-///         // The encoder is dropped here, returning its engine to the pool for the next request.
+///             .compress(body)
+///         // The compressor is dropped here, returning its engine to the pool for the next request.
 ///     }
 /// }
 ///
@@ -90,16 +90,16 @@ pub(crate) struct EngineKey {
 /// |---|---|
 /// | `deflate` / `zlib` / `gzip` compressor | yes — `reset` preserves its container and level |
 /// | `deflate` / `zlib` decompressor | yes — `reset` restores the framing |
-/// | `gzip` decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decode as raw deflate |
+/// | `gzip` decompressor | no — the underlying reset takes a boolean that cannot express gzip framing, so a recycled engine would silently decompress as raw deflate |
 /// | `zstd` compressor and decompressor | yes — `reset` keeps the context's allocations, which is where most of the cost is |
-/// | `brotli` encoder and decoder | no — upstream exposes no reset, and recycling its buffers through a custom allocator was measured and did not pay for itself |
+/// | `brotli` compressor and decompressor | no — upstream exposes no reset, and recycling its buffers through a custom allocator was measured and did not pay for itself |
 ///
 /// Decompressors are cheaper to build than compressors, but decompression is also much faster, so
 /// the fixed setup cost is a comparable share of the work either way.
 ///
 /// The gzip decompressor is the one gap worth explaining, because gzip is the encoding most often
 /// seen on the wire. Nothing about gzip prevents recycling: the obstacle is only that the engine's
-/// reset cannot express gzip framing. Taking over that framing here would let gzip decoders join
+/// reset cannot express gzip framing. Taking over that framing here would let gzip decompressors join
 /// the pool, but it would mean owning header parsing and checksum validation permanently in order
 /// to route around someone else's API gap. That is a poor trade for a crate whose job is to stream
 /// bytes, so the gap is left where it belongs. If the engine ever gains a reset that can express

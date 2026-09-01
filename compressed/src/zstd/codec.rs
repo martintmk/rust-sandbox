@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::level::Level;
 use crate::limits::FormatLimits;
 use crate::pool::Pool;
-use crate::zstd::{CompressionLevel, EncoderOptions};
+use crate::zstd::{CompressionLevel, CompressorOptions};
 
 /// Maps the portable [`Level`] scale onto zstd's levels.
 ///
@@ -23,7 +23,7 @@ use crate::zstd::{CompressionLevel, EncoderOptions};
 /// [`Level::DEFAULT`] means what it says on every format — a balanced trade-off.
 ///
 /// Reach the levels above this range with
-/// [`EncoderBuilder::compression_level`][crate::zstd::EncoderBuilder::compression_level].
+/// [`CompressorBuilder::compression_level`][crate::zstd::CompressorBuilder::compression_level].
 fn compression_level(level: Level) -> i32 {
     // 0..=6 spans zstd 1..=3 (its default); 7..=9 climbs to 12, past which cost explodes.
     const MAPPING: [i32; 10] = [1, 1, 2, 2, 3, 3, 3, 6, 9, 12];
@@ -54,7 +54,7 @@ pub(crate) struct ZstdCompress {
 }
 
 impl ZstdCompress {
-    pub(crate) fn new(level: Level, options: EncoderOptions, pool: Option<Pool>) -> Self {
+    pub(crate) fn new(level: Level, options: CompressorOptions, pool: Option<Pool>) -> Self {
         let level = options.level.map_or_else(|| compression_level(level), CompressionLevel::get);
 
         let mut context = pool
@@ -63,7 +63,7 @@ impl ZstdCompress {
             .unwrap_or_else(CCtx::create);
 
         // Applied unconditionally: a recycled context comes back with its parameters cleared, so
-        // that a recycled encoder is indistinguishable from a fresh one.
+        // that a recycled compressor is indistinguishable from a fresh one.
         let _ = context.set_parameter(CParameter::CompressionLevel(level));
 
         Self {

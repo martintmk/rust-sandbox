@@ -16,13 +16,13 @@
 //! use compressed::brotli;
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = brotli::compress(
+//! let compressed = brotli::compress(
 //!     BytesView::copied_from_slice(b"the quick brown fox", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
-//!     brotli::decompress(encoded, memory)?.to_vec(),
+//!     brotli::decompress(compressed, memory)?.to_vec(),
 //!     b"the quick brown fox".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -45,15 +45,15 @@ use crate::format::macros::define_format;
 
 define_format! {
     name = "brotli",
-    encoder_codec = BrotliCompress,
-    encoder_options = EncoderOptions,
-    new_encoder = |level, options, _pool| BrotliCompress::new(level, options),
-    decoder_codec = BrotliDecompress,
-    decoder_options = (),
+    compressor_codec = BrotliCompress,
+    compressor_options = CompressorOptions,
+    new_compressor = |level, options, _pool| BrotliCompress::new(level, options),
+    decompressor_codec = BrotliDecompress,
+    decompressor_options = (),
     default_limits = DEFAULT_LIMITS,
-    new_decoder = |limits, multi_stream, (), _pool| BrotliDecompress::new(limits, multi_stream),
+    new_decompressor = |limits, multi_stream, (), _pool| BrotliDecompress::new(limits, multi_stream),
     multi_stream_default = false,
-    multi_stream_doc = "Sets whether consecutive brotli streams decode as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
+    multi_stream_doc = "Sets whether consecutive brotli streams decompress as one logical stream.\n\nDisabled by default: brotli has an explicit end-of-stream marker and concatenation is not an established convention.",
 }
 
 /// The kind of data brotli should tune its model for.
@@ -75,14 +75,14 @@ pub enum Mode {
 
 /// The base-2 logarithm of brotli's sliding window, in bytes.
 ///
-/// A larger window lets the encoder find matches further back, which is what helps on large inputs.
+/// A larger window lets the compressor find matches further back, which is what helps on large inputs.
 ///
 /// It is tempting to read this as a memory dial and shrink it to economise. Measurement says
-/// otherwise, and in more than one direction. Encoder memory and throughput do not fall off
-/// smoothly as the window shrinks: below a threshold the encoder allocates *more* and runs
+/// otherwise, and in more than one direction. Compressor memory and throughput do not fall off
+/// smoothly as the window shrinks: below a threshold the compressor allocates *more* and runs
 /// *slower*, so a small window can cost on every axis at once. The ratio is not monotonic either,
-/// because a window comparable to the payload can beat a much larger one. Decoder memory tracks
-/// the data actually decoded rather than the window the encoder declared, so a small window is not
+/// because a window comparable to the payload can beat a much larger one. Decompressor memory tracks
+/// the data actually decompressed rather than the window the compressor declared, so a small window is not
 /// a reliable way to spare the reader.
 ///
 /// The practical advice is to leave this alone unless a measurement on real payloads says
@@ -146,40 +146,40 @@ impl From<WindowSize> for u8 {
     }
 }
 
-/// Brotli's format-specific encoder settings.
+/// Brotli's format-specific compressor settings.
 ///
-/// Held by the generated [`EncoderBuilder`] and populated by the setters below.
+/// Held by the generated [`CompressorBuilder`] and populated by the setters below.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct EncoderOptions {
+pub(crate) struct CompressorOptions {
     pub(crate) mode: Mode,
     pub(crate) window_size: WindowSize,
 }
 
 /// Settings that only brotli has.
 ///
-/// The portable settings — [`level`][EncoderBuilder::level] and
-/// [`output_chunk_size`][EncoderBuilder::output_chunk_size] — are shared with every other format
-/// and are also reachable through [`Format::encoder`][crate::format::Format::encoder]. These are not: a
+/// The portable settings — [`level`][CompressorBuilder::level] and
+/// [`output_chunk_size`][CompressorBuilder::output_chunk_size] — are shared with every other format
+/// and are also reachable through [`Format::compressor`][crate::format::Format::compressor]. These are not: a
 /// runtime builder that might produce any format cannot honour a setting only brotli has, so
 /// reach for them through this concrete builder and box the result if you need a
-/// [`Encoder`][crate::Encoder] trait object.
+/// compressing [`Compression`][crate::Compression] trait object.
 ///
 /// # Examples
 ///
 /// ```
 /// use bytesbuf::mem::GlobalPool;
 /// use compressed::brotli::{Mode, WindowSize};
-/// use compressed::{Encoder, brotli};
+/// use compressed::{Compress, Compression, brotli};
 ///
-/// let encoder: Box<dyn Encoder> = Box::new(
-///     brotli::Encoder::builder()
+/// let compressor: Box<dyn Compression<Mode = Compress>> = Box::new(
+///     brotli::Compressor::builder()
 ///         .mode(Mode::Text)
 ///         .window_size(WindowSize::new(20).expect("20 is in range"))
 ///         .build(GlobalPool::new()),
 /// );
-/// # let _ = encoder;
+/// # let _ = compressor;
 /// ```
-impl EncoderBuilder {
+impl CompressorBuilder {
     /// Tunes the entropy model for a particular kind of input.
     #[must_use]
     pub const fn mode(mut self, mode: Mode) -> Self {
@@ -189,7 +189,7 @@ impl EncoderBuilder {
 
     /// Sets the sliding window size.
     ///
-    /// Every decoder reading the stream must allocate a window this large, so raising it is a cost
+    /// Every decompressor reading the stream must allocate a window this large, so raising it is a cost
     /// paid by the reader as well as the writer.
     #[must_use]
     pub const fn window_size(mut self, window_size: WindowSize) -> Self {

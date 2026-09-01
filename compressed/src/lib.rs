@@ -21,13 +21,13 @@
 //! use compressed::gzip;
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = gzip::compress(
+//! let compressed = gzip::compress(
 //!     BytesView::copied_from_slice(b"hello", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
-//!     gzip::decompress(encoded, memory)?.to_vec(),
+//!     gzip::decompress(compressed, memory)?.to_vec(),
 //!     b"hello".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -35,7 +35,7 @@
 //!
 //! # Streaming
 //!
-//! [`gzip::Encoder`] and [`gzip::Decoder`] are push/pull state machines rather than one-shot
+//! [`gzip::Compressor`] and [`gzip::Decompressor`] are push/pull state machines rather than one-shot
 //! transforms. Each `pull` returns at most one chunk, so processing a multi-gigabyte stream never
 //! holds more than one pending input view plus one output chunk:
 //!
@@ -47,16 +47,16 @@
 //! # let memory = GlobalPool::new();
 //! # let source = vec![gzip::compress(
 //! #     BytesView::copied_from_slice(b"streamed", &memory), memory.clone())?];
-//! let mut decoder = gzip::Decoder::new(memory);
+//! let mut decompressor = gzip::Decompressor::new(memory);
 //! let mut chunks = source.into_iter();
 //! let mut plain = BytesBuf::new();
 //!
 //! loop {
-//!     match decoder.pull()? {
+//!     match decompressor.pull()? {
 //!         Output::Data(data) => plain.put_bytes(data),
 //!         Output::NeedInput => match chunks.next() {
-//!             Some(chunk) => decoder.push(chunk)?,
-//!             None => decoder.finish(),
+//!             Some(chunk) => decompressor.push(chunk)?,
+//!             None => decompressor.finish(),
 //!         },
 //!         Output::Done => break,
 //!     }
@@ -68,10 +68,10 @@
 //!
 //! # Choosing a format
 //!
-//! The [`Encoder`] and [`Decoder`] traits describe the contract independently of the format, so
-//! code can be written once and used with any of them. When the format is only known at runtime —
+//! The [`Compression`] trait describes the contract independently of the format and direction, so
+//! code can be written once and used with any implementation. When the format is only known at runtime —
 //! from a `Content-Encoding` header, say — [`format::Format`] resolves it and its builders produce a boxed
-//! codec, which is itself an `Encoder` or `Decoder` and so fits anywhere a concrete one does:
+//! operation, which is itself a `Compression` and so fits anywhere a concrete one does:
 //!
 //! ```
 //! use bytesbuf::BytesView;
@@ -85,13 +85,13 @@
 //!     .expect("no mutually supported encoding");
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = format.compress(
+//! let compressed = format.compress(
 //!     BytesView::copied_from_slice(b"negotiated", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
-//!     format.decompress(encoded, memory)?.to_vec(),
+//!     format.decompress(compressed, memory)?.to_vec(),
 //!     b"negotiated".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -100,9 +100,9 @@
 //! # Reusing engine state
 //!
 //! Building a compressor allocates and initialises a substantial amount of state — on a small
-//! message, as much work as the compression itself. A service that encodes many messages should
-//! hold one [`Pool`], clone it into each encoder, and let the engine return to the pool when the
-//! encoder drops. The saving is roughly fixed per message, so it matters most for small bodies.
+//! message, as much work as the compression itself. A service that compresses many messages should
+//! hold one [`Pool`], clone it into each compressor, and let the engine return to the pool when the
+//! compressor drops. The saving is roughly fixed per message, so it matters most for small bodies.
 //!
 //! ```
 //! use bytesbuf::mem::GlobalPool;
@@ -112,8 +112,8 @@
 //! let memory = GlobalPool::new();
 //!
 //! // Per request: cheap to build, recycles the engine on drop.
-//! let encoder = gzip::Encoder::builder().pool(codecs.clone()).build(memory);
-//! # let _ = encoder;
+//! let compressor = gzip::Compressor::builder().pool(codecs.clone()).build(memory);
+//! # let _ = compressor;
 //! ```
 //!
 //! The pool is transparent — it recycles what is worth recycling and builds the rest — so calling
@@ -121,7 +121,7 @@
 //!
 //! # Security
 //!
-//! Every one of these formats can expand its input by orders of magnitude, so a decoder pointed at
+//! Every one of these formats can expand its input by orders of magnitude, so a decompressor pointed at
 //! untrusted data is a memory-exhaustion vector.
 //!
 //! The codecs themselves never accumulate: each `pull` hands back one bounded chunk, so nothing in
@@ -155,7 +155,7 @@
 //! * `zlib` — the `zlib` module and `Format::Zlib`, via `flate2`.
 //! * `brotli` — the `brotli` module and `Format::Brotli`, via the pure-Rust `brotli` crate.
 //! * `zstd` — the `zstd` module and `Format::Zstd`, via `zstd-safe`.
-//! * `futures-stream` — the `stream` module, presenting compression and decompression as a
+//! * `futures-stream` — [`CompressionStream`], presenting compression and decompression as a
 //!   `futures_core::Stream` over any stream of byte sequences.
 //!
 //! The deflate-family features share one dependency, so enabling all three costs no more than one.
@@ -163,7 +163,7 @@
 
 #[cfg(feature = "brotli")]
 pub mod brotli;
-mod codec;
+mod compression;
 #[cfg(feature = "deflate")]
 pub mod deflate;
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
@@ -185,11 +185,13 @@ pub mod zlib;
 pub mod zstd;
 
 #[cfg(feature = "futures-stream")]
-pub mod stream;
+mod stream;
 
-pub use codec::{Decoder, Encoder};
+pub use compression::{Compress, Compression, Decompress};
 pub use error::{Error, Result};
 pub use level::Level;
 pub use limits::DecompressionLimits;
 pub use output::Output;
 pub use pool::Pool;
+#[cfg(feature = "futures-stream")]
+pub use stream::CompressionStream;

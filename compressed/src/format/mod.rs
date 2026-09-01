@@ -8,7 +8,7 @@
 //!
 //! [`Format`] is the entry point. The builders it returns live here beside it, so they do not
 //! collide with the per-format builders such as
-//! [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder].
+//! [`gzip::CompressorBuilder`][crate::gzip::CompressorBuilder].
 
 #[cfg(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd"))]
 pub(crate) mod macros;
@@ -19,7 +19,7 @@ use std::num::NonZeroUsize;
 use bytesbuf::BytesView;
 use bytesbuf::mem::MemoryShared;
 
-use crate::codec::{Decoder, Encoder};
+use crate::compression::{Compress, Compression, Decompress};
 use crate::engine::DEFAULT_CHUNK_SIZE;
 use crate::error::Result;
 use crate::level::Level;
@@ -44,9 +44,9 @@ use crate::pool::Pool;
 /// let format = Format::from_content_encoding("gzip").expect("a supported encoding");
 ///
 /// let memory = GlobalPool::new();
-/// let mut encoder = format.encoder().level(Level::BEST).build(memory.clone());
+/// let mut compressor = format.compressor().level(Level::BEST).build(memory.clone());
 ///
-/// encoder.push(BytesView::copied_from_slice(b"payload", &memory))?;
+/// compressor.push(BytesView::copied_from_slice(b"payload", &memory))?;
 /// # Ok::<(), compressed::Error>(())
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -238,10 +238,10 @@ impl Format {
         ranked.into_iter().take(len).flatten().map(|entry| entry.format)
     }
 
-    /// Starts configuring an encoder for this format.
+    /// Starts configuring a compressor for this format.
     #[must_use]
-    pub const fn encoder(self) -> EncoderBuilder {
-        EncoderBuilder {
+    pub const fn compressor(self) -> CompressorBuilder {
+        CompressorBuilder {
             format: self,
             level: Level::DEFAULT,
             chunk_size: default_chunk_size(),
@@ -249,10 +249,10 @@ impl Format {
         }
     }
 
-    /// Starts configuring a decoder for this format.
+    /// Starts configuring a decompressor for this format.
     #[must_use]
-    pub const fn decoder(self) -> DecoderBuilder {
-        DecoderBuilder {
+    pub const fn decompressor(self) -> DecompressorBuilder {
+        DecompressorBuilder {
             format: self,
             limits: DecompressionLimits::new(),
             chunk_size: default_chunk_size(),
@@ -263,25 +263,25 @@ impl Format {
 
     /// Compresses a complete byte sequence that is already in memory.
     ///
-    /// Uses [`Level::DEFAULT`]; for anything else, configure an encoder with [`Format::encoder`].
+    /// Uses [`Level::DEFAULT`]; for anything else, configure a compressor with [`Format::compressor`].
     ///
     /// # Errors
     ///
     /// Returns an error if the underlying compression engine fails.
     pub fn compress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        self.encoder().build(memory).encode(input)
+        self.compressor().build(memory).compress(input)
     }
 
     /// Decompresses a complete stream that is already in memory.
     ///
-    /// Applies [`DecompressionLimits::new()`]; for anything else, configure a decoder with
-    /// [`Format::decoder`].
+    /// Applies [`DecompressionLimits::new()`]; for anything else, configure a decompressor with
+    /// [`Format::decompressor`].
     ///
     /// # Errors
     ///
     /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
     pub fn decompress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        self.decoder().build(memory).decode(input)
+        self.decompressor().build(memory).decompress(input)
     }
 }
 
@@ -347,20 +347,20 @@ const fn default_chunk_size() -> NonZeroUsize {
     }
 }
 
-/// Configures an encoder for a [`Format`] chosen at runtime.
+/// Configures a compressor for a [`Format`] chosen at runtime.
 ///
-/// Mirrors the per-format builders such as [`gzip::EncoderBuilder`][crate::gzip::EncoderBuilder],
-/// but produces a boxed [`Encoder`] so the format need not be known at compile time. Reach it
-/// through [`Format::encoder`] rather than naming it directly.
+/// Mirrors the per-format builders such as [`gzip::CompressorBuilder`][crate::gzip::CompressorBuilder],
+/// but produces a boxed compressing [`Compression`] so the format need not be known at compile time. Reach it
+/// through [`Format::compressor`] rather than naming it directly.
 #[derive(Debug, Clone)]
-pub struct EncoderBuilder {
+pub struct CompressorBuilder {
     format: Format,
     level: Level,
     chunk_size: NonZeroUsize,
     pool: Option<Pool>,
 }
 
-impl EncoderBuilder {
+impl CompressorBuilder {
     /// Sets the compression level, mapped onto the format's native range.
     #[must_use]
     pub const fn level(mut self, level: Level) -> Self {
@@ -377,21 +377,21 @@ impl EncoderBuilder {
 
     /// Recycles engine state through a shared [`Pool`].
     ///
-    /// Building a compressor is not free, so a service that encodes many messages should hand every
-    /// encoder the same pool. The engine is returned when the encoder is dropped. Without a pool
-    /// each encoder builds its own engine, which is the default.
+    /// Building a compressor is not free, so a service that compresses many messages should hand every
+    /// compressor the same pool. The engine is returned when the compressor is dropped. Without a pool
+    /// each compressor builds its own engine, which is the default.
     #[must_use]
     pub fn pool(mut self, pool: Pool) -> Self {
         self.pool = Some(pool);
         self
     }
 
-    /// Builds the encoder, drawing its output buffers from `memory`.
+    /// Builds the compressor, drawing its output buffers from `memory`.
     #[must_use]
-    pub fn build(self, memory: impl MemoryShared) -> Box<dyn Encoder> {
+    pub fn build(self, memory: impl MemoryShared) -> Box<dyn Compression<Mode = Compress>> {
         macro_rules! build {
             ($module:ident) => {{
-                let builder = crate::$module::Encoder::builder()
+                let builder = crate::$module::Compressor::builder()
                     .level(self.level)
                     .output_chunk_size(self.chunk_size);
 
@@ -419,13 +419,13 @@ impl EncoderBuilder {
     }
 }
 
-/// Configures a decoder for a [`Format`] chosen at runtime.
+/// Configures a decompressor for a [`Format`] chosen at runtime.
 ///
-/// Mirrors the per-format builders such as [`gzip::DecoderBuilder`][crate::gzip::DecoderBuilder],
-/// but produces a boxed [`Decoder`] so the format need not be known at compile time. Reach it
-/// through [`Format::decoder`] rather than naming it directly.
+/// Mirrors the per-format builders such as [`gzip::DecompressorBuilder`][crate::gzip::DecompressorBuilder],
+/// but produces a boxed decompressing [`Compression`] so the format need not be known at compile time. Reach it
+/// through [`Format::decompressor`] rather than naming it directly.
 #[derive(Debug, Clone)]
-pub struct DecoderBuilder {
+pub struct DecompressorBuilder {
     format: Format,
     limits: DecompressionLimits,
     chunk_size: NonZeroUsize,
@@ -433,7 +433,7 @@ pub struct DecoderBuilder {
     pool: Option<Pool>,
 }
 
-impl DecoderBuilder {
+impl DecompressorBuilder {
     /// Overrides the bounds on how much data decompression may produce.
     ///
     /// Bounds left unset on the passed value keep the chosen format's own defaults, which differ by
@@ -456,7 +456,7 @@ impl DecoderBuilder {
         self
     }
 
-    /// Sets whether consecutive streams decode as one logical stream.
+    /// Sets whether consecutive streams decompress as one logical stream.
     ///
     /// Left unset, each format keeps its own default: enabled for `Format::Gzip` and
     /// `Format::Zstd`, matching `gzip(1)` and the `zstd` tool, and disabled for the rest, where
@@ -474,7 +474,7 @@ impl DecoderBuilder {
 
     /// Recycles engine state through a shared [`Pool`].
     ///
-    /// The engine is returned when the decoder is dropped. See [`Pool`] for which engines are
+    /// The engine is returned when the decompressor is dropped. See [`Pool`] for which engines are
     /// actually recycled.
     #[must_use]
     pub fn pool(mut self, pool: Pool) -> Self {
@@ -482,12 +482,12 @@ impl DecoderBuilder {
         self
     }
 
-    /// Builds the decoder, drawing its output buffers from `memory`.
+    /// Builds the decompressor, drawing its output buffers from `memory`.
     #[must_use]
-    pub fn build(self, memory: impl MemoryShared) -> Box<dyn Decoder> {
+    pub fn build(self, memory: impl MemoryShared) -> Box<dyn Compression<Mode = Decompress>> {
         macro_rules! build {
             ($module:ident) => {{
-                let builder = crate::$module::Decoder::builder()
+                let builder = crate::$module::Decompressor::builder()
                     .limits(self.limits)
                     .output_chunk_size(self.chunk_size);
 
@@ -536,13 +536,13 @@ mod tests {
         Format::from_accept_encoding(header).collect()
     }
 
-    fn encoded_len(builder: EncoderBuilder, payload: &[u8]) -> usize {
-        let mut encoder = builder.build(GlobalPool::new());
-        encoder.push(view(payload)).expect("push succeeds");
-        encoder.finish();
+    fn compressed_len(builder: CompressorBuilder, payload: &[u8]) -> usize {
+        let mut compressor = builder.build(GlobalPool::new());
+        compressor.push(view(payload)).expect("push succeeds");
+        compressor.finish();
 
         let mut total = 0;
-        while let Some(chunk) = encoder.pull().expect("pull succeeds").into_data() {
+        while let Some(chunk) = compressor.pull().expect("pull succeeds").into_data() {
             total += chunk.len();
         }
 
@@ -555,8 +555,8 @@ mod tests {
 
         for &format in Format::ALL {
             let memory = GlobalPool::new();
-            let encoded = format.compress(view(&payload), memory.clone()).expect("compression succeeds");
-            let plain = format.decompress(encoded, memory).expect("decompression succeeds");
+            let compressed = format.compress(view(&payload), memory.clone()).expect("compression succeeds");
+            let plain = format.decompress(compressed, memory).expect("decompression succeeds");
 
             assert_eq!(plain.to_vec(), payload, "{format:?} failed to round trip");
         }
@@ -730,49 +730,49 @@ mod tests {
     }
 
     #[test]
-    fn the_encoder_builder_applies_its_level() {
+    fn the_compressor_builder_applies_its_level() {
         let payload = b"the quick brown fox jumps over the lazy dog ".repeat(400);
 
         for &format in Format::ALL {
-            let fast = encoded_len(format.encoder().level(Level::FAST), &payload);
-            let best = encoded_len(format.encoder().level(Level::BEST), &payload);
+            let fast = compressed_len(format.compressor().level(Level::FAST), &payload);
+            let best = compressed_len(format.compressor().level(Level::BEST), &payload);
 
             assert!(best <= fast, "{format:?}: best={best} should not exceed fast={fast}");
         }
     }
 
     #[test]
-    fn the_encoder_builder_applies_its_chunk_size() {
+    fn the_compressor_builder_applies_its_chunk_size() {
         let bound = NonZeroUsize::new(128).expect("128 is not zero");
 
         for &format in Format::ALL {
-            let mut encoder = format.encoder().output_chunk_size(bound).build(GlobalPool::new());
-            encoder.push(view(&b"chunked ".repeat(5_000))).expect("push succeeds");
-            encoder.finish();
+            let mut compressor = format.compressor().output_chunk_size(bound).build(GlobalPool::new());
+            compressor.push(view(&b"chunked ".repeat(5_000))).expect("push succeeds");
+            compressor.finish();
 
-            while let Some(chunk) = encoder.pull().expect("pull succeeds").into_data() {
+            while let Some(chunk) = compressor.pull().expect("pull succeeds").into_data() {
                 assert!(chunk.len() <= bound.get(), "{format:?} produced a {} byte chunk", chunk.len());
             }
         }
     }
 
     #[test]
-    fn the_decoder_builder_applies_its_limits() {
+    fn the_decompressor_builder_applies_its_limits() {
         for &format in Format::ALL {
             let memory = GlobalPool::new();
-            let encoded = format
+            let compressed = format
                 .compress(view(&vec![0_u8; 4 * 1024 * 1024]), memory.clone())
                 .expect("compression succeeds");
 
-            let mut decoder = format
-                .decoder()
+            let mut decompressor = format
+                .decompressor()
                 .limits(DecompressionLimits::new().without_max_ratio().with_max_output_len(1024))
                 .build(memory);
-            decoder.push(encoded).expect("push succeeds");
-            decoder.finish();
+            decompressor.push(compressed).expect("push succeeds");
+            decompressor.finish();
 
             let error = loop {
-                match decoder.pull() {
+                match decompressor.pull() {
                     Ok(Output::Data(_)) => {}
                     Ok(_) => panic!("{format:?}: the cap should have fired"),
                     Err(error) => break error,
@@ -786,18 +786,18 @@ mod tests {
     #[test]
     fn multi_stream_governs_every_format() {
         // The generic half of the contract: whatever the format, setting this explicitly decides
-        // whether a second stream is decoded or ignored.
+        // whether a second stream is decompressed or ignored.
         let memory = GlobalPool::new();
         let payload = b"member ".repeat(50);
 
         for &format in Format::ALL {
-            let encoded = format.compress(view(&payload), memory.clone()).expect("compress");
-            let joined = BytesView::from_views([encoded.clone(), encoded]);
+            let compressed = format.compress(view(&payload), memory.clone()).expect("compress");
+            let joined = BytesView::from_views([compressed.clone(), compressed]);
 
-            let joined_len = decode_len(format.decoder().multi_stream(true).build(memory.clone()), joined.clone());
+            let joined_len = decompressed_len(format.decompressor().multi_stream(true).build(memory.clone()), joined.clone());
             assert_eq!(joined_len, payload.len() * 2, "{format:?} should join with multi_stream(true)");
 
-            let single_len = decode_len(format.decoder().multi_stream(false).build(memory.clone()), joined);
+            let single_len = decompressed_len(format.decompressor().multi_stream(false).build(memory.clone()), joined);
             assert_eq!(single_len, payload.len(), "{format:?} should stop with multi_stream(false)");
         }
     }
@@ -814,18 +814,18 @@ mod tests {
             // Matching the variant by name keeps this free of the cfg gates the variants carry.
             let joins_by_default = matches!(format!("{format:?}").as_str(), "Gzip" | "Zstd");
 
-            let encoded = format.compress(view(&payload), memory.clone()).expect("compress");
-            let joined = BytesView::from_views([encoded.clone(), encoded]);
+            let compressed = format.compress(view(&payload), memory.clone()).expect("compress");
+            let joined = BytesView::from_views([compressed.clone(), compressed]);
 
-            let len = decode_len(format.decoder().build(memory.clone()), joined);
+            let len = decompressed_len(format.decompressor().build(memory.clone()), joined);
             let expected = if joins_by_default { payload.len() * 2 } else { payload.len() };
 
             assert_eq!(len, expected, "{format:?} did not keep its documented default");
         }
     }
 
-    fn decode_len(decoder: Box<dyn Decoder>, input: BytesView) -> usize {
-        decoder.decode(input).expect("decompression succeeds").len()
+    fn decompressed_len(decompressor: Box<dyn Compression<Mode = Decompress>>, input: BytesView) -> usize {
+        decompressor.decompress(input).expect("decompression succeeds").len()
     }
 
     #[test]

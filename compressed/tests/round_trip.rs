@@ -34,22 +34,22 @@ fn chunk(size: usize) -> NonZeroUsize {
 }
 
 /// Drives a codec to completion over an input delivered in `feed` sized pieces.
-fn drive_decoder(mut decoder: gzip::Decoder, input: &BytesView, feed: usize) -> compressed::Result<BytesView> {
+fn drive_decompressor(mut decompressor: gzip::Decompressor, input: &BytesView, feed: usize) -> compressed::Result<BytesView> {
     let mut offset = 0;
     let mut collected = BytesBuf::new();
 
     loop {
-        match decoder.pull()? {
+        match decompressor.pull()? {
             Output::Data(data) => collected.put_bytes(data),
             Output::Done => break,
             Output::NeedInput => {
                 if offset >= input.len() {
-                    decoder.finish();
+                    decompressor.finish();
                     continue;
                 }
 
                 let end = (offset + feed).min(input.len());
-                decoder.push(input.range(offset..end))?;
+                decompressor.push(input.range(offset..end))?;
                 offset = end;
             }
         }
@@ -59,15 +59,15 @@ fn drive_decoder(mut decoder: gzip::Decoder, input: &BytesView, feed: usize) -> 
 }
 
 #[test]
-fn decodes_a_stream_produced_by_the_system_gzip() {
-    let plain = gzip::decompress(view(SYSTEM_GZIP), GlobalPool::new()).expect("the fixture decodes");
+fn decompresses_a_stream_produced_by_the_system_gzip() {
+    let plain = gzip::decompress(view(SYSTEM_GZIP), GlobalPool::new()).expect("the fixture decompresses");
 
     assert_eq!(plain.to_vec(), FIXTURE_PLAINTEXT);
 }
 
 #[test]
-fn decodes_concatenated_members_produced_by_the_system_gzip() {
-    let plain = gzip::decompress(view(SYSTEM_GZIP_TWO_MEMBERS), GlobalPool::new()).expect("the fixture decodes");
+fn decompresses_concatenated_members_produced_by_the_system_gzip() {
+    let plain = gzip::decompress(view(SYSTEM_GZIP_TWO_MEMBERS), GlobalPool::new()).expect("the fixture decompresses");
 
     assert_eq!(plain.to_vec(), [FIXTURE_PLAINTEXT, FIXTURE_PLAINTEXT].concat());
 }
@@ -79,14 +79,14 @@ fn our_framing_matches_an_independent_gzip_reader() {
     use std::io::Read as _;
 
     let payload = b"cross checked against an independent reader ".repeat(200);
-    let encoded = gzip::compress(fragmented(&payload, 71), GlobalPool::new()).expect("compression succeeds");
+    let compressed = gzip::compress(fragmented(&payload, 71), GlobalPool::new()).expect("compression succeeds");
 
-    let mut decoded = Vec::new();
-    flate2::read::GzDecoder::new(encoded.to_vec().as_slice())
-        .read_to_end(&mut decoded)
+    let mut decompressed = Vec::new();
+    flate2::read::GzDecoder::new(compressed.to_vec().as_slice())
+        .read_to_end(&mut decompressed)
         .expect("an independent reader accepts our output");
 
-    assert_eq!(decoded, payload);
+    assert_eq!(decompressed, payload);
 }
 
 #[test]
@@ -98,8 +98,8 @@ fn round_trips_a_multi_segment_view() {
     for (segment, repeats) in [(1, 200), (7, 500), (64, 5_000), (1024, 20_000), (65_536, 20_000)] {
         let payload = b"multi segment payload ".repeat(repeats);
 
-        let encoded = gzip::compress(fragmented(&payload, segment), GlobalPool::new()).expect("compression succeeds");
-        let plain = gzip::decompress(encoded, GlobalPool::new()).expect("decompression succeeds");
+        let compressed = gzip::compress(fragmented(&payload, segment), GlobalPool::new()).expect("compression succeeds");
+        let plain = gzip::decompress(compressed, GlobalPool::new()).expect("decompression succeeds");
 
         assert_eq!(plain.to_vec(), payload, "round trip failed for {segment} byte segments");
     }
@@ -108,10 +108,10 @@ fn round_trips_a_multi_segment_view() {
 #[test]
 fn round_trips_when_input_arrives_one_byte_at_a_time() {
     let payload = b"trickled in".repeat(50);
-    let encoded = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
+    let compressed = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
 
-    let decoder = gzip::Decoder::builder().output_chunk_size(chunk(1)).build(GlobalPool::new());
-    let plain = drive_decoder(decoder, &encoded, 1).expect("decompression succeeds");
+    let decompressor = gzip::Decompressor::builder().output_chunk_size(chunk(1)).build(GlobalPool::new());
+    let plain = drive_decompressor(decompressor, &compressed, 1).expect("decompression succeeds");
 
     assert_eq!(plain.to_vec(), payload);
 }
@@ -125,12 +125,12 @@ fn streams_a_large_payload_with_a_bounded_working_set() {
     let payload = b"large streamed payload, compressible but not trivially so; ".repeat(400_000);
     assert!(payload.len() > 20 * 1024 * 1024, "the payload should be large enough to matter");
 
-    let mut encoder = gzip::Encoder::builder().output_chunk_size(chunk(CHUNK)).build(GlobalPool::new());
-    encoder.push(fragmented(&payload, 4096)).expect("push succeeds");
-    encoder.finish();
+    let mut compressor = gzip::Compressor::builder().output_chunk_size(chunk(CHUNK)).build(GlobalPool::new());
+    compressor.push(fragmented(&payload, 4096)).expect("push succeeds");
+    compressor.finish();
 
     let mut compressed = Vec::new();
-    while let Some(piece) = encoder.pull().expect("pull succeeds").into_data() {
+    while let Some(piece) = compressor.pull().expect("pull succeeds").into_data() {
         assert!(
             piece.len() <= CHUNK,
             "chunk of {} bytes exceeded the {CHUNK} byte bound",
@@ -142,8 +142,10 @@ fn streams_a_large_payload_with_a_bounded_working_set() {
     let gz = BytesView::from_views(compressed);
     assert!(gz.len() < payload.len() / 10, "the payload should compress well");
 
-    let decoder = gzip::Decoder::builder().output_chunk_size(chunk(CHUNK)).build(GlobalPool::new());
-    let plain = drive_decoder(decoder, &gz, 8192).expect("decompression succeeds");
+    let decompressor = gzip::Decompressor::builder()
+        .output_chunk_size(chunk(CHUNK))
+        .build(GlobalPool::new());
+    let plain = drive_decompressor(decompressor, &gz, 8192).expect("decompression succeeds");
 
     assert_eq!(plain.len(), payload.len());
     assert_eq!(plain.to_vec(), payload);
@@ -160,25 +162,25 @@ fn rejects_a_bomb_before_materialising_it() {
     let bomb = gzip::compress(view(&vec![0_u8; 64 * 1024 * 1024]), GlobalPool::new()).expect("compression succeeds");
     assert!(bomb.len() < 100 * 1024, "the bomb should be tiny: {} bytes", bomb.len());
 
-    let mut decoder = gzip::Decoder::builder()
+    let mut decompressor = gzip::Decompressor::builder()
         .limits(DecompressionLimits::new().with_max_output_len(1024 * 1024))
         .build(GlobalPool::new());
-    decoder.push(bomb).expect("push succeeds");
-    decoder.finish();
+    decompressor.push(bomb).expect("push succeeds");
+    decompressor.finish();
 
     let error = loop {
-        match decoder.pull() {
+        match decompressor.pull() {
             Ok(Output::Data(_)) => {}
-            Ok(_) => panic!("the bomb decoded fully instead of being rejected"),
+            Ok(_) => panic!("the bomb decompressed fully instead of being rejected"),
             Err(error) => break error,
         }
     };
 
     assert!(error.is_limit_exceeded(), "got {error}");
     assert!(
-        decoder.total_out() < 64 * 1024 * 1024,
+        decompressor.total_out() < 64 * 1024 * 1024,
         "the guard should fire before the full expansion, stopped at {}",
-        decoder.total_out()
+        decompressor.total_out()
     );
 }
 
@@ -187,9 +189,9 @@ fn the_default_limits_accept_maximally_compressible_deflate_data() {
     // Deflate's structural ceiling is about 1032x, so the gzip default must sit above it: data the
     // format could legitimately have produced must never be rejected as a bomb.
     let payload = vec![0_u8; 8 * 1024 * 1024];
-    let encoded = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
+    let compressed = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
 
-    let plain = gzip::decompress(encoded, GlobalPool::new()).expect("default limits must accept maximal deflate compression");
+    let plain = gzip::decompress(compressed, GlobalPool::new()).expect("default limits must accept maximal deflate compression");
 
     assert_eq!(plain.len(), payload.len());
 }
@@ -197,23 +199,29 @@ fn the_default_limits_accept_maximally_compressible_deflate_data() {
 #[test]
 fn trusted_callers_can_opt_out_of_the_limits() {
     let payload = vec![0_u8; 8 * 1024 * 1024];
-    let encoded = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
+    let compressed = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
 
-    let decoder = gzip::Decoder::builder()
+    let decompressor = gzip::Decompressor::builder()
         .limits(DecompressionLimits::UNLIMITED)
         .build(GlobalPool::new());
-    let plain = drive_decoder(decoder, &encoded, usize::MAX).expect("decompression succeeds");
+    let plain = drive_decompressor(decompressor, &compressed, usize::MAX).expect("decompression succeeds");
 
     assert_eq!(plain.len(), payload.len());
 }
 
 #[test]
 fn detects_truncation_at_every_offset() {
-    let encoded = gzip::compress(view(&b"truncate me ".repeat(500)), GlobalPool::new()).expect("compression succeeds");
+    let compressed = gzip::compress(view(&b"truncate me ".repeat(500)), GlobalPool::new()).expect("compression succeeds");
 
-    for cut in [1, encoded.len() / 4, encoded.len() / 2, encoded.len() - 8, encoded.len() - 1] {
+    for cut in [
+        1,
+        compressed.len() / 4,
+        compressed.len() / 2,
+        compressed.len() - 8,
+        compressed.len() - 1,
+    ] {
         let error =
-            gzip::decompress(encoded.range(0..cut), GlobalPool::new()).expect_err("a truncated stream must not decode successfully");
+            gzip::decompress(compressed.range(0..cut), GlobalPool::new()).expect_err("a truncated stream must not decompress successfully");
 
         assert!(
             error.is_unexpected_end_of_stream() || error.is_corrupt_data(),
@@ -225,8 +233,8 @@ fn detects_truncation_at_every_offset() {
 #[test]
 fn a_corrupted_byte_anywhere_is_detected() {
     let payload = b"integrity checked payload ".repeat(100);
-    let encoded = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
-    let original = encoded.to_vec();
+    let compressed = gzip::compress(view(&payload), GlobalPool::new()).expect("compression succeeds");
+    let original = compressed.to_vec();
 
     for index in [0, 1, 2, original.len() / 2, original.len() - 5, original.len() - 1] {
         let mut corrupted = original.clone();
@@ -246,8 +254,8 @@ fn a_corrupted_byte_anywhere_is_detected() {
 
 #[test]
 fn empty_input_round_trips() {
-    let encoded = gzip::compress(BytesView::new(), GlobalPool::new()).expect("compression succeeds");
-    let plain = gzip::decompress(encoded, GlobalPool::new()).expect("decompression succeeds");
+    let compressed = gzip::compress(BytesView::new(), GlobalPool::new()).expect("compression succeeds");
+    let plain = gzip::decompress(compressed, GlobalPool::new()).expect("decompression succeeds");
 
     assert!(plain.is_empty());
 }
@@ -260,8 +268,8 @@ fn a_custom_memory_provider_is_used_for_output() {
     let buf = memory.reserve(1);
     drop(buf);
 
-    let encoded = gzip::compress(view(b"provider supplied"), memory.clone()).expect("compression succeeds");
-    let plain = gzip::decompress(encoded, memory).expect("decompression succeeds");
+    let compressed = gzip::compress(view(b"provider supplied"), memory.clone()).expect("compression succeeds");
+    let plain = gzip::decompress(compressed, memory).expect("decompression succeeds");
 
     assert_eq!(plain.to_vec(), b"provider supplied".to_vec());
 }

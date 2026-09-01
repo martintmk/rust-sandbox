@@ -106,7 +106,7 @@ impl Error {
 
     /// The input ended in the middle of a compressed stream.
     ///
-    /// The bytes decoded so far are valid; the producer stopped early or the transport truncated
+    /// The bytes decompressed so far are valid; the producer stopped early or the transport truncated
     /// them. This is distinct from [`is_corrupt_data`][Self::is_corrupt_data] because it is usually
     /// worth retrying, whereas corrupt data is not.
     #[must_use]

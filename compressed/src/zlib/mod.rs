@@ -13,13 +13,13 @@
 //! use compressed::zlib;
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = zlib::compress(
+//! let compressed = zlib::compress(
 //!     BytesView::copied_from_slice(b"the quick brown fox", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
-//!     zlib::decompress(encoded, memory)?.to_vec(),
+//!     zlib::decompress(compressed, memory)?.to_vec(),
 //!     b"the quick brown fox".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -31,13 +31,13 @@ use crate::format::macros::define_format;
 
 define_format! {
     name = "zlib",
-    encoder_codec = FlateCompress,
-    encoder_options = (),
-    new_encoder = |level, (), pool| FlateCompress::new(Wrapper::Zlib, level, pool),
-    decoder_codec = FlateDecompress,
-    decoder_options = (),
+    compressor_codec = FlateCompress,
+    compressor_options = (),
+    new_compressor = |level, (), pool| FlateCompress::new(Wrapper::Zlib, level, pool),
+    decompressor_codec = FlateDecompress,
+    decompressor_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,
-    new_decoder = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Zlib, limits, multi_stream, pool),
+    new_decompressor = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Zlib, limits, multi_stream, pool),
     multi_stream_default = false,
-    multi_stream_doc = "Sets whether concatenated zlib streams decode as one logical stream.\n\nDisabled by default: unlike gzip, concatenating zlib streams is not an established convention.",
+    multi_stream_doc = "Sets whether concatenated zlib streams decompress as one logical stream.\n\nDisabled by default: unlike gzip, concatenating zlib streams is not an established convention.",
 }

@@ -14,13 +14,13 @@
 //! use compressed::deflate;
 //!
 //! let memory = GlobalPool::new();
-//! let encoded = deflate::compress(
+//! let compressed = deflate::compress(
 //!     BytesView::copied_from_slice(b"the quick brown fox", &memory),
 //!     memory.clone(),
 //! )?;
 //!
 //! assert_eq!(
-//!     deflate::decompress(encoded, memory)?.to_vec(),
+//!     deflate::decompress(compressed, memory)?.to_vec(),
 //!     b"the quick brown fox".to_vec()
 //! );
 //! # Ok::<(), compressed::Error>(())
@@ -32,13 +32,13 @@ use crate::format::macros::define_format;
 
 define_format! {
     name = "deflate",
-    encoder_codec = FlateCompress,
-    encoder_options = (),
-    new_encoder = |level, (), pool| FlateCompress::new(Wrapper::Raw, level, pool),
-    decoder_codec = FlateDecompress,
-    decoder_options = (),
+    compressor_codec = FlateCompress,
+    compressor_options = (),
+    new_compressor = |level, (), pool| FlateCompress::new(Wrapper::Raw, level, pool),
+    decompressor_codec = FlateDecompress,
+    decompressor_options = (),
     default_limits = crate::flate::DEFAULT_LIMITS,
-    new_decoder = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Raw, limits, multi_stream, pool),
+    new_decompressor = |limits, multi_stream, (), pool| FlateDecompress::new(Wrapper::Raw, limits, multi_stream, pool),
     multi_stream_default = false,
-    multi_stream_doc = "Sets whether consecutive deflate streams decode as one logical stream.\n\nDisabled by default: raw deflate carries no framing, so trailing bytes are usually not another stream.",
+    multi_stream_doc = "Sets whether consecutive deflate streams decompress as one logical stream.\n\nDisabled by default: raw deflate carries no framing, so trailing bytes are usually not another stream.",
 }
