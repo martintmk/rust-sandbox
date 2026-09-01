@@ -308,10 +308,43 @@ impl Decompressing for Box<dyn Decompressing> {
 }
 
 #[cfg(all(test, feature = "gzip"))]
+#[derive(Debug)]
+pub(crate) struct ProgressCompression {
+    pulls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(all(test, feature = "gzip"))]
+impl ProgressCompression {
+    pub(crate) fn new(pulls: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self { pulls }
+    }
+}
+
+#[cfg(all(test, feature = "gzip"))]
+impl sealed::Compression for ProgressCompression {}
+
+#[cfg(all(test, feature = "gzip"))]
+impl Compression for ProgressCompression {
+    type Mode = Compress;
+
+    fn push(&mut self, _input: BytesView) -> Result<()> {
+        Ok(())
+    }
+
+    fn end_input(&mut self) {}
+
+    fn pull(&mut self) -> Result<Output> {
+        self.pulls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Output::Progress)
+    }
+}
+
+#[cfg(all(test, feature = "gzip"))]
 mod tests {
     use bytesbuf::mem::GlobalPool;
 
     use super::*;
+    use crate::format::Format;
     use crate::gzip;
 
     fn view(bytes: &[u8]) -> BytesView {
@@ -367,5 +400,64 @@ mod tests {
         assert_send_sync(&gzip::Decompressor::new(GlobalPool::new()));
         assert!(format!("{compressor:?}").contains("Compressor"));
         assert!(format!("{decompressor:?}").contains("Decompressor"));
+    }
+
+    #[test]
+    fn direction_specific_traits_work_for_concrete_and_runtime_operations() {
+        let memory = GlobalPool::new();
+        let input = view(b"direction-specific capabilities");
+
+        let mut concrete = gzip::Compressor::new(memory.clone());
+        concrete.push(input.clone()).expect("push succeeds");
+        Compressing::flush(&mut concrete).expect("concrete flush succeeds");
+        loop {
+            match concrete.pull().expect("pull succeeds") {
+                Output::Data(_) | Output::Progress => {}
+                Output::NeedInput => break,
+                Output::Done => panic!("flush ended the stream"),
+            }
+        }
+
+        let mut compressor = Format::Gzip.compressor().build(memory.clone());
+        compressor.push(input).expect("push succeeds");
+        Compressing::flush(&mut compressor).expect("boxed flush succeeds");
+        let mut compressed = BytesBuf::new();
+        loop {
+            match compressor.pull().expect("pull succeeds") {
+                Output::Data(chunk) => compressed.put_bytes(chunk),
+                Output::Progress => {}
+                Output::NeedInput => break,
+                Output::Done => panic!("flush ended the stream"),
+            }
+        }
+
+        compressor.end_input();
+        loop {
+            match compressor.pull().expect("pull succeeds") {
+                Output::Data(chunk) => compressed.put_bytes(chunk),
+                Output::Progress => {}
+                Output::NeedInput => panic!("compressor requested input after end"),
+                Output::Done => break,
+            }
+        }
+
+        let trailing = view(b"trailing");
+        let joined = BytesView::from_views([compressed.consume_all(), trailing.clone()]);
+        let mut decompressor = Format::Gzip.decompressor().multi_stream(false).build(memory);
+        decompressor.push(joined).expect("push succeeds");
+        loop {
+            match decompressor.pull().expect("pull succeeds") {
+                Output::Data(_) | Output::Progress => {}
+                Output::NeedInput => panic!("complete stream requested more input"),
+                Output::Done => break,
+            }
+        }
+
+        assert_eq!(
+            Decompressing::take_remainder(&mut decompressor)
+                .expect("boxed remainder succeeds")
+                .to_vec(),
+            trailing.to_vec()
+        );
     }
 }

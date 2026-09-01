@@ -233,6 +233,15 @@ mod configuration_tests {
         assert!(CompressionLevel::min().get() < 0);
         assert_eq!(CompressionLevel::new(CompressionLevel::min().get()), Some(CompressionLevel::min()));
         assert_eq!(CompressionLevel::new(CompressionLevel::max().get()), Some(CompressionLevel::max()));
+        assert_eq!(CompressionLevel::default(), CompressionLevel::DEFAULT);
+        assert_eq!(
+            CompressionLevel::try_from(CompressionLevel::DEFAULT.get()).expect("in range"),
+            CompressionLevel::DEFAULT
+        );
+        assert_eq!(i32::from(CompressionLevel::DEFAULT), CompressionLevel::DEFAULT.get());
+
+        let error = CompressionLevel::try_from(CompressionLevel::max().get().saturating_add(1)).expect_err("out of range");
+        assert!(error.is_invalid_configuration(), "got {error}");
     }
 
     #[test]
@@ -241,5 +250,10 @@ mod configuration_tests {
         assert_eq!(WindowLog::new(WindowLog::MAX.get()), Some(WindowLog::MAX));
         assert_eq!(WindowLog::new(WindowLog::MIN.get() - 1), None);
         assert_eq!(WindowLog::new(WindowLog::MAX.get() + 1), None);
+        assert_eq!(WindowLog::default(), WindowLog::DEFAULT);
+        assert_eq!(WindowLog::try_from(WindowLog::DEFAULT.get()).expect("in range"), WindowLog::DEFAULT);
+
+        let error = WindowLog::try_from(WindowLog::MIN.get() - 1).expect_err("out of range");
+        assert!(error.is_invalid_configuration(), "got {error}");
     }
 }

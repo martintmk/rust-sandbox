@@ -53,7 +53,7 @@ fn payload(size: usize) -> Vec<u8> {
                 seed % 100_000,
                 seed % 1_000,
                 ["alpha", "beta", "gamma", "delta", "epsilon"][(seed % 5) as usize],
-                seed % 2 == 0
+                seed.is_multiple_of(2)
             )
             .as_bytes(),
         );
@@ -150,7 +150,7 @@ fn compression(criterion: &mut Criterion, session: &Session) {
             let memory = GlobalPool::new();
             let input = view(&bytes, &memory);
             let name = format!("{format:?}/{size}");
-            let operation = session.operation(&format!("compress {name}"));
+            let operation = session.operation(format!("compress {name}"));
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
@@ -174,7 +174,7 @@ fn decompression(criterion: &mut Criterion, session: &Session) {
             let memory = GlobalPool::new();
             let compressed = compress(format, None, None, None, &view(&bytes, &memory), &memory);
             let name = format!("{format:?}/{size}");
-            let operation = session.operation(&format!("decompress {name}"));
+            let operation = session.operation(format!("decompress {name}"));
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
@@ -208,7 +208,7 @@ fn pooling(criterion: &mut Criterion, session: &Session) {
 
         for (label, pooled) in [("fresh", None), ("pooled", Some(&pool))] {
             let name = format!("{format:?}/compress/{label}");
-            let operation = session.operation(&format!("pool {name}"));
+            let operation = session.operation(format!("pool {name}"));
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
@@ -217,7 +217,7 @@ fn pooling(criterion: &mut Criterion, session: &Session) {
             });
 
             let name = format!("{format:?}/decompress/{label}");
-            let operation = session.operation(&format!("pool {name}"));
+            let operation = session.operation(format!("pool {name}"));
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
@@ -245,7 +245,7 @@ fn segmentation(criterion: &mut Criterion, session: &Session) {
     for segment in [64_usize, 1024, 16 * 1024] {
         let input = fragmented(&bytes, segment, &memory);
         let name = format!("{segment}B spans");
-        let operation = session.operation(&format!("segment {name}"));
+        let operation = session.operation(format!("segment {name}"));
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
@@ -280,7 +280,7 @@ fn chunk_size(criterion: &mut Criterion, session: &Session) {
 
     for size in [1024_usize, 8 * 1024, 64 * 1024, 512 * 1024] {
         let name = format!("{size}B chunks");
-        let operation = session.operation(&format!("chunk {name}"));
+        let operation = session.operation(format!("chunk {name}"));
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
@@ -304,7 +304,7 @@ fn levels(criterion: &mut Criterion, session: &Session) {
 
         for level in [Level::FAST, Level::DEFAULT, Level::HIGH] {
             let name = format!("{format:?}/{}", level.get());
-            let operation = session.operation(&format!("level {name}"));
+            let operation = session.operation(format!("level {name}"));
 
             group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
                 measured(bencher, &operation, || {
@@ -336,7 +336,7 @@ fn brotli_window(criterion: &mut Criterion, session: &Session) {
     for exponent in [10_u8, 16, 18, 22] {
         let window = WindowSize::new(exponent).expect("exponents are in range");
         let name = format!("2^{exponent}");
-        let operation = session.operation(&format!("brotli window {name}"));
+        let operation = session.operation(format!("brotli window {name}"));
 
         group.bench_function(BenchmarkId::from_parameter(&name), |bencher| {
             measured(bencher, &operation, || {
@@ -347,7 +347,7 @@ fn brotli_window(criterion: &mut Criterion, session: &Session) {
         // The decompressor side matters independently: the window is recorded in the stream, so a
         // reader inherits whatever the writer chose.
         let compressed = compress_brotli(window, &input, &memory);
-        let operation = session.operation(&format!("brotli window {name} decompress"));
+        let operation = session.operation(format!("brotli window {name} decompress"));
 
         group.bench_function(BenchmarkId::from_parameter(format!("{name}/decompress")), |bencher| {
             measured(bencher, &operation, || {
@@ -415,13 +415,13 @@ fn zstd_footprint() {
         // The contexts allocate lazily, so measure only after real work has sized them.
         let mut context = zstd_safe::CCtx::create();
         let written = context
-            .compress(&mut buffer[..], &bytes, i32::from(level.get()))
+            .compress(&mut *buffer, &bytes, i32::from(level.get()))
             .expect("compression succeeds");
 
         let mut decompressor = zstd_safe::DCtx::create();
         let mut plain = vec![0_u8; bytes.len()];
         decompressor
-            .decompress(&mut plain[..], &buffer[..written])
+            .decompress(&mut *plain, &buffer[..written])
             .expect("decompression succeeds");
 
         println!("| {:<5} | {:>10} | {:>10} |", level.get(), context.sizeof(), decompressor.sizeof());

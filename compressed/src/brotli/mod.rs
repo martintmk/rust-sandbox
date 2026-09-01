@@ -276,5 +276,11 @@ mod quality_tests {
         }
 
         assert_eq!(Quality::new(12), None);
+        assert_eq!(Quality::default(), Quality::DEFAULT);
+        assert_eq!(Quality::try_from(8).expect("in range"), Quality::new(8).expect("in range"));
+        assert_eq!(u8::from(Quality::MAX), 11);
+
+        let error = Quality::try_from(12).expect_err("out of range");
+        assert!(error.is_invalid_configuration(), "got {error}");
     }
 }

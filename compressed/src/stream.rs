@@ -50,7 +50,10 @@ where
                 return Poll::Ready(Some(Err(error)));
             }
             Ok(Output::Data(data)) => return Poll::Ready(Some(Ok(data))),
-            Ok(Output::Progress) => {}
+            Ok(Output::Progress) => {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
             Ok(Output::Done) => {
                 *finished = true;
                 return Poll::Ready(None);
@@ -225,6 +228,7 @@ mod tests {
     use futures::{StreamExt, stream};
 
     use super::*;
+    use crate::compression::ProgressCompression;
     use crate::format::Format;
     use crate::{DecompressionLimits, Level, gzip};
 
@@ -467,8 +471,28 @@ mod tests {
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
 
-        assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        let mut yielded = false;
+        for _ in 0..4 {
+            if stream.as_mut().poll_next(&mut cx).is_pending() {
+                yielded = true;
+                break;
+            }
+        }
+
+        assert!(yielded, "the adapter must yield after a bounded amount of ready work");
         assert_eq!(polls.load(Ordering::Relaxed), MAX_OPERATIONS_PER_POLL);
+    }
+
+    #[test]
+    fn progress_yields_after_one_codec_pull() {
+        let pulls = Arc::new(AtomicUsize::new(0));
+        let source = stream::pending::<std::result::Result<BytesView, std::io::Error>>();
+        let mut stream = Box::pin(CompressionStream::compress(source, ProgressCompression::new(Arc::clone(&pulls))));
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        assert_eq!(pulls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

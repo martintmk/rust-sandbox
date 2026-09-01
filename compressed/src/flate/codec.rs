@@ -184,12 +184,17 @@ impl Codec for FlateDecompress {
             });
         }
 
-        // Another stream follows. The engine must be replaced rather than reset: `Decompress::reset`
-        // takes a `bool` that selects between raw deflate and zlib, and so cannot express gzip
-        // framing (which the engine compresses as `window_bits + 16`). Resetting a gzip decompressor
-        // silently drops it to raw deflate, and the next member then fails with "invalid block
-        // type".
-        self.decompress = Some(self.wrapper.decompressor());
+        match self.wrapper {
+            #[cfg(feature = "deflate")]
+            Wrapper::Raw => self.engine().reset(false),
+            #[cfg(feature = "zlib")]
+            Wrapper::Zlib => self.engine().reset(true),
+            #[cfg(feature = "gzip")]
+            Wrapper::Gzip => {
+                // `Decompress::reset` cannot express gzip framing.
+                self.decompress = Some(self.wrapper.decompressor());
+            }
+        }
         Ok(StreamEnd::NextStream)
     }
 

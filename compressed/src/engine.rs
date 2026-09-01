@@ -21,6 +21,9 @@ const MAX_INPUT_PER_PULL: usize = 1024 * 1024;
 /// Maximum engine calls made by one public `pull` call.
 const MAX_STEPS_PER_PULL: usize = 64;
 
+/// Enough room for the largest deflate sync-flush marker plus one spare byte.
+const MIN_FLUSH_OUTPUT: usize = 7;
+
 /// What the encoder should do with the input supplied to one engine step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Operation {
@@ -119,6 +122,7 @@ pub(crate) struct Pump {
     total_out: u64,
     streams: u64,
     state: State,
+    done_reported: bool,
 }
 
 impl Pump {
@@ -135,6 +139,7 @@ impl Pump {
             total_out: 0,
             streams: 0,
             state: State::Open,
+            done_reported: false,
         }
     }
 
@@ -147,8 +152,8 @@ impl Pump {
 
         match self.state {
             State::Open => {}
+            State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } if input.is_empty() => return Ok(()),
             State::BetweenStreams => self.state = State::Open,
-            State::AwaitingEof | State::AtStreamLimit { .. } if input.is_empty() => return Ok(()),
             State::AwaitingEof => {
                 let error = Error::corrupt_data("trailing data followed the compressed stream");
                 return Err(self.fail(error));
@@ -175,8 +180,13 @@ impl Pump {
     pub(crate) fn flush(&mut self) -> Result<()> {
         match self.state {
             State::Open => self.state = State::Flushing { end_after: false },
-            State::Flushing { .. } => {}
-            State::Finishing | State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } | State::Done => {
+            State::Flushing { end_after: false } => {}
+            State::Flushing { end_after: true }
+            | State::Finishing
+            | State::BetweenStreams
+            | State::AwaitingEof
+            | State::AtStreamLimit { .. }
+            | State::Done => {
                 return Err(Error::invalid_state("cannot flush after end of input was signalled"));
             }
             State::Failed => {
@@ -206,7 +216,7 @@ impl Pump {
     }
 
     pub(crate) fn take_remainder(&mut self) -> Result<BytesView> {
-        if self.state != State::Done {
+        if self.state != State::Done || !self.done_reported {
             return Err(Error::invalid_state("the input remainder is available only after decoding is done"));
         }
 
@@ -224,7 +234,7 @@ impl Pump {
             return None;
         }
 
-        Some(self.output.consume_all())
+        Some(self.output.consume(self.output.len().min(self.chunk_size)))
     }
 
     #[expect(
@@ -233,7 +243,14 @@ impl Pump {
     )]
     pub(crate) fn pull(&mut self, codec: &mut impl Codec) -> Result<Output> {
         match self.state {
-            State::Done => return Ok(self.take_output().map_or(Output::Done, Output::Data)),
+            State::Done => {
+                if let Some(data) = self.take_output() {
+                    return Ok(Output::Data(data));
+                }
+
+                self.done_reported = true;
+                return Ok(Output::Done);
+            }
             State::Failed => {
                 return Err(Error::invalid_state("cannot continue after a previous codec failure"));
             }
@@ -259,21 +276,13 @@ impl Pump {
                 return Ok(self.take_output().map_or(Output::Progress, Output::Data));
             }
 
-            if self.input.is_empty() && self.state == State::Open {
-                return Ok(self.take_output().map_or(Output::NeedInput, Output::Data));
-            }
-
-            if self.output.remaining_capacity() == 0 {
-                self.output.reserve(self.chunk_size, &self.memory);
-            }
-
             // A memory provider may hand back more capacity than asked for, so the chunk bound has
             // to be applied to the slice itself rather than to the reservation. This also bounds
             // the cost of the engine's zero-fill of the uninitialized output slice.
             let budget = self.chunk_size - self.output.len();
             let pending = self.input.len();
             let input_budget = MAX_INPUT_PER_PULL - input_work;
-            let (step, consumed, produced, supplied) = {
+            let (step, consumed, produced, supplied, provided_output) = {
                 let first = self.input.first_slice();
                 let input = &first[..first.len().min(input_budget)];
                 let supplied = input.len();
@@ -286,20 +295,28 @@ impl Pump {
                         unreachable!("non-driving states return before stepping")
                     }
                 };
+                let engine_budget = if operation == Operation::Flush {
+                    budget.max(MIN_FLUSH_OUTPUT)
+                } else {
+                    budget
+                };
+                if self.output.remaining_capacity() < engine_budget {
+                    self.output.reserve(engine_budget, &self.memory);
+                }
                 let spare = self.output.first_unfilled_slice();
                 let remaining = codec.remaining_output(self.total_out);
                 let limit_budget = remaining.map_or(usize::MAX, |remaining| usize::try_from(remaining).unwrap_or(usize::MAX));
                 // One probe byte lets the engine prove that a stream ending exactly at the limit
                 // needs no more output, while bounding any overshoot to a byte that is never
                 // returned to the caller.
-                let take = spare.len().min(budget).min(limit_budget.max(1));
+                let take = spare.len().min(engine_budget).min(limit_budget.max(1));
                 match codec.step(input, &mut spare[..take], operation) {
-                    Ok((step, consumed, produced)) => (step, consumed, produced, supplied),
+                    Ok((step, consumed, produced)) => (step, consumed, produced, supplied, take),
                     Err(error) => return Err(self.fail(error)),
                 }
             };
 
-            if consumed > supplied || produced > budget {
+            if consumed > supplied || produced > provided_output {
                 return Err(self.fail(Error::invalid_state("the compression engine reported invalid byte counts")));
             }
 
@@ -380,8 +397,11 @@ impl Pump {
                 }
 
                 return Ok(match self.state {
-                    State::Done => Output::Done,
-                    State::Open => continue,
+                    State::Done => {
+                        self.done_reported = true;
+                        Output::Done
+                    }
+                    State::Open | State::Finishing => continue,
                     State::BetweenStreams | State::AwaitingEof | State::AtStreamLimit { .. } => Output::NeedInput,
                     _ => unreachable!("stream-end transition produced an invalid state"),
                 });
@@ -625,5 +645,33 @@ mod tests {
 
         let error = pump.pull(&mut Expanding).expect_err("limit is enforced");
         assert!(error.is_limit_exceeded());
+    }
+
+    #[test]
+    fn rejects_output_counts_beyond_the_provided_slice() {
+        #[derive(Debug)]
+        struct Overreports;
+
+        impl Codec for Overreports {
+            fn step(&mut self, _input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                output[0].write(0);
+                Ok((Step::Continue, 0, output.len() + 1))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
+            }
+
+            fn remaining_output(&self, _total_out: u64) -> Option<u64> {
+                Some(0)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(b"input")).expect("push succeeds");
+
+        let error = pump.pull(&mut Overreports).expect_err("invalid output count is rejected");
+        assert!(error.is_invalid_state(), "got {error}");
+        assert_eq!(pump.total_out(), 0, "uninitialized bytes must never be advanced");
     }
 }

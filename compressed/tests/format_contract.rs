@@ -776,7 +776,7 @@ macro_rules! format_contract {
             #[test]
             fn a_flush_makes_supplied_input_decompressible_without_ending_the_stream() {
                 let memory = GlobalPool::new();
-                let data = b"flush this data now ".repeat(200);
+                let data = b"flush this data now ".repeat(20_000);
                 let mut compressor = $module::Compressor::new(memory.clone());
                 compressor.push(view(&data)).expect("push succeeds");
                 compressor.flush().expect("flush request succeeds");
@@ -815,6 +815,10 @@ macro_rules! format_contract {
                 compressor.push(view(&data)).expect("push succeeds");
                 compressor.flush().expect("flush request succeeds");
                 compressor.end_input();
+                let error = compressor
+                    .flush()
+                    .expect_err("a flush queued behind end_input cannot be requested again");
+                assert!(error.is_invalid_state(), "got {error}");
 
                 let mut compressed = BytesBuf::new();
                 loop {
@@ -828,6 +832,54 @@ macro_rules! format_contract {
 
                 let plain = $module::decompress(compressed.consume_all(), memory).expect("decompression succeeds");
                 assert_eq!(plain.to_vec(), data);
+            }
+
+            #[test]
+            fn flush_terminates_with_tiny_output_chunks() {
+                let data = b"tiny flush chunks ".repeat(100);
+
+                for size in 1..=7 {
+                    let memory = GlobalPool::new();
+                    let mut compressor = $module::Compressor::builder()
+                        .output_chunk_size(chunk(size))
+                        .build(memory.clone());
+                    compressor.push(view(&data)).expect("push succeeds");
+                    compressor.flush().expect("flush request succeeds");
+
+                    let mut compressed = BytesBuf::new();
+                    let mut pulls = 0;
+                    loop {
+                        pulls += 1;
+                        assert!(pulls < 20_000, "flush did not terminate at chunk size {size}");
+
+                        match compressor.pull().expect("pull succeeds") {
+                            Output::Data(piece) => {
+                                assert!(piece.len() <= size);
+                                compressed.put_bytes(piece);
+                            }
+                            Output::Progress => {}
+                            Output::NeedInput => break,
+                            Output::Done => panic!("flush ended the stream"),
+                        }
+                    }
+
+                    compressor.end_input();
+                    loop {
+                        match compressor.pull().expect("finish succeeds") {
+                            Output::Data(piece) => {
+                                assert!(piece.len() <= size);
+                                compressed.put_bytes(piece);
+                            }
+                            Output::Progress => {}
+                            Output::NeedInput => panic!("compressor requested input after end"),
+                            Output::Done => break,
+                        }
+                    }
+
+                    let plain = $module::decompress(compressed.consume_all(), memory)
+                        .unwrap_or_else(|error| panic!("chunk size {size} did not round trip: {error}"));
+                    assert_eq!(plain.to_vec(), data);
+                }
             }
 
             #[test]
@@ -877,7 +929,13 @@ macro_rules! format_contract {
                 let mut plain = BytesBuf::new();
                 loop {
                     match decompressor.pull().expect("decompression succeeds") {
-                        Output::Data(chunk) => plain.put_bytes(chunk),
+                        Output::Data(chunk) => {
+                            plain.put_bytes(chunk);
+                            let error = decompressor
+                                .take_remainder()
+                                .expect_err("the remainder is unavailable before Done");
+                            assert!(error.is_invalid_state(), "got {error}");
+                        }
                         Output::Progress => {}
                         Output::NeedInput => panic!("single stream was complete"),
                         Output::Done => break,
@@ -888,6 +946,63 @@ macro_rules! format_contract {
                 assert_eq!(
                     decompressor.take_remainder().expect("done exposes remainder").to_vec(),
                     trailing.to_vec()
+                );
+            }
+
+            #[test]
+            fn an_empty_push_does_not_create_a_phantom_stream() {
+                let memory = GlobalPool::new();
+                let data = b"one member only".repeat(20);
+                let compressed = $module::compress(view(&data), memory.clone()).expect("compress");
+                let mut decompressor = $module::Decompressor::builder().multi_stream(true).build(memory);
+                decompressor.push(compressed).expect("first push succeeds");
+
+                let mut plain = BytesBuf::new();
+                loop {
+                    match decompressor.pull().expect("stream decompresses") {
+                        Output::Data(chunk) => plain.put_bytes(chunk),
+                        Output::Progress => {}
+                        Output::NeedInput => break,
+                        Output::Done => panic!("multi-stream decompressor must wait for EOF"),
+                    }
+                }
+
+                decompressor.push(BytesView::new()).expect("empty chunks are ignored");
+                assert!(decompressor.pull().expect("pull succeeds").is_need_input());
+                decompressor.end_input();
+                assert!(decompressor.pull().expect("EOF completes").is_done());
+                assert_eq!(plain.consume_all().to_vec(), data);
+            }
+
+            #[test]
+            fn multi_stream_end_input_handles_an_internal_member_boundary() {
+                let memory = GlobalPool::new();
+                let first_plain = b"AAAAAAAAAA";
+                let second_plain = b"BBBBBBBBBB";
+                let first = $module::compress(view(first_plain), memory.clone()).expect("compress");
+                let second = $module::compress(view(second_plain), memory.clone()).expect("compress");
+                let split = first.len().saturating_sub(1);
+                let joined = BytesView::from_views([first.range(0..split), first.range(split..), second]);
+                let mut decompressor = $module::Decompressor::builder()
+                    .multi_stream(true)
+                    .output_chunk_size(chunk(first_plain.len()))
+                    .build(memory);
+                decompressor.push(joined).expect("push succeeds");
+                decompressor.end_input();
+
+                let mut plain = BytesBuf::new();
+                loop {
+                    match decompressor.pull().expect("both streams decompress") {
+                        Output::Data(chunk) => plain.put_bytes(chunk),
+                        Output::Progress => {}
+                        Output::NeedInput => panic!("all input was already supplied"),
+                        Output::Done => break,
+                    }
+                }
+
+                assert_eq!(
+                    plain.consume_all().to_vec(),
+                    [first_plain.as_slice(), second_plain.as_slice()].concat()
                 );
             }
 

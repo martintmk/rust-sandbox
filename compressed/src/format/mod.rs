@@ -181,6 +181,10 @@ impl Format {
     /// # Errors
     ///
     /// Returns an error if the underlying compression engine fails.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "one-shot operations consistently borrow the selected runtime format"
+    )]
     pub fn compress(&self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
         (*self).compressor().build(memory).compress(input)
     }
@@ -193,6 +197,10 @@ impl Format {
     /// # Errors
     ///
     /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "one-shot operations consistently borrow the selected runtime format"
+    )]
     pub fn decompress(&self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
         (*self).decompressor().build(memory).decompress(input)
     }
@@ -202,6 +210,10 @@ impl Format {
     /// # Errors
     ///
     /// Returns an error if the data is malformed, truncated, or exceeds `limits`.
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "one-shot operations consistently borrow the selected runtime format"
+    )]
     pub fn decompress_with_limits(&self, input: BytesView, memory: impl MemoryShared, limits: DecompressionLimits) -> Result<BytesView> {
         (*self).decompressor().limits(limits).build(memory).decompress(input)
     }
@@ -549,6 +561,32 @@ mod tests {
             };
 
             assert!(error.is_limit_exceeded(), "{format:?}: got {error}");
+        }
+    }
+
+    #[test]
+    fn the_decompressor_builder_applies_its_chunk_size() {
+        let bound = NonZeroUsize::new(128).expect("128 is not zero");
+
+        for &format in Format::ALL {
+            let memory = GlobalPool::new();
+            let compressed = format
+                .compress(view(&b"chunked output ".repeat(5_000)), memory.clone())
+                .expect("compression succeeds");
+            let mut decompressor = format.decompressor().output_chunk_size(bound).build(memory);
+            decompressor.push(compressed).expect("push succeeds");
+            decompressor.end_input();
+
+            loop {
+                match decompressor.pull().expect("pull succeeds") {
+                    Output::Data(chunk) => {
+                        assert!(chunk.len() <= bound.get(), "{format:?} produced a {} byte chunk", chunk.len());
+                    }
+                    Output::Progress => {}
+                    Output::NeedInput => panic!("decompressor requested input after end"),
+                    Output::Done => break,
+                }
+            }
         }
     }
 
