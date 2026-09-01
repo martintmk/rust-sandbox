@@ -98,6 +98,7 @@ pub(crate) struct FlateDecompress {
     limits: FormatLimits,
     multi_stream: bool,
     trailing_data: TrailingData,
+    needs_reset: bool,
     /// Only present where some container's decompressor can actually be recycled.
     #[cfg(any(feature = "deflate", feature = "zlib"))]
     recycle: Option<Pool>,
@@ -118,6 +119,7 @@ impl FlateDecompress {
             limits,
             multi_stream,
             trailing_data,
+            needs_reset: false,
             #[cfg(any(feature = "deflate", feature = "zlib"))]
             recycle: pool,
         }
@@ -153,6 +155,21 @@ impl Drop for FlateDecompress {
 
 impl Codec for FlateDecompress {
     fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+        if self.needs_reset {
+            match self.wrapper {
+                #[cfg(feature = "deflate")]
+                Wrapper::Raw => self.engine().reset(false),
+                #[cfg(feature = "zlib")]
+                Wrapper::Zlib => self.engine().reset(true),
+                #[cfg(feature = "gzip")]
+                Wrapper::Gzip => {
+                    // `Decompress::reset` cannot express gzip framing.
+                    self.decompress = Some(self.wrapper.decompressor());
+                }
+            }
+            self.needs_reset = false;
+        }
+
         let wrapper = self.wrapper;
         let decompress = self.engine();
         let before_in = decompress.total_in();
@@ -184,17 +201,7 @@ impl Codec for FlateDecompress {
             });
         }
 
-        match self.wrapper {
-            #[cfg(feature = "deflate")]
-            Wrapper::Raw => self.engine().reset(false),
-            #[cfg(feature = "zlib")]
-            Wrapper::Zlib => self.engine().reset(true),
-            #[cfg(feature = "gzip")]
-            Wrapper::Gzip => {
-                // `Decompress::reset` cannot express gzip framing.
-                self.decompress = Some(self.wrapper.decompressor());
-            }
-        }
+        self.needs_reset = true;
         Ok(StreamEnd::NextStream)
     }
 

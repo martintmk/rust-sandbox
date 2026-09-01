@@ -144,6 +144,7 @@ pub(crate) struct BrotliDecompress {
     limits: FormatLimits,
     multi_stream: bool,
     trailing_data: TrailingData,
+    needs_reset: bool,
     total_out: usize,
 }
 
@@ -154,6 +155,7 @@ impl BrotliDecompress {
             limits,
             multi_stream,
             trailing_data,
+            needs_reset: false,
             total_out: 0,
         }
     }
@@ -175,6 +177,12 @@ impl std::fmt::Debug for BrotliDecompress {
 
 impl Codec for BrotliDecompress {
     fn step(&mut self, input: &[u8], output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+        if self.needs_reset {
+            self.state = Self::state();
+            self.total_out = 0;
+            self.needs_reset = false;
+        }
+
         let out = initialize(output);
         let mut available_in = input.len();
         let mut input_offset = 0_usize;
@@ -211,8 +219,7 @@ impl Codec for BrotliDecompress {
             });
         }
 
-        self.state = Self::state();
-        self.total_out = 0;
+        self.needs_reset = true;
         Ok(StreamEnd::NextStream)
     }
 

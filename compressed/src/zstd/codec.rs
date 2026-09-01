@@ -150,6 +150,7 @@ pub(crate) struct ZstdDecompress {
     trailing_data: TrailingData,
     recycle: Option<Pool>,
     configuration_error: Option<Error>,
+    needs_reset: bool,
 }
 
 impl ZstdDecompress {
@@ -178,6 +179,7 @@ impl ZstdDecompress {
             trailing_data,
             recycle: pool,
             configuration_error,
+            needs_reset: false,
         }
     }
 
@@ -212,6 +214,16 @@ impl Codec for ZstdDecompress {
             return Err(error);
         }
 
+        if self.needs_reset {
+            self.engine().reset(ResetDirective::SessionOnly).map_err(|code| {
+                Error::invalid_state(format!(
+                    "zstd failed to reset for the next frame: {}",
+                    zstd_safe::get_error_name(code)
+                ))
+            })?;
+            self.needs_reset = false;
+        }
+
         let out = initialize(output);
         let mut in_buffer = InBuffer::around(input);
         let mut out_buffer = OutBuffer::around(out);
@@ -235,14 +247,9 @@ impl Codec for ZstdDecompress {
             });
         }
 
-        // A concatenated frame follows. Resetting the session drops the finished frame while
-        // keeping the context's allocations.
-        self.engine().reset(ResetDirective::SessionOnly).map_err(|code| {
-            Error::invalid_state(format!(
-                "zstd failed to reset for the next frame: {}",
-                zstd_safe::get_error_name(code)
-            ))
-        })?;
+        // Reset only if another frame actually arrives, so the common single-frame path does no
+        // terminal cleanup work.
+        self.needs_reset = true;
         Ok(StreamEnd::NextStream)
     }
 
