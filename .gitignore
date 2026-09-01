@@ -13,6 +13,15 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Default pr-review-dashboard runtime database
+/pr-review-dashboard.sqlite3
+/pr-review-dashboard.sqlite3-shm
+/pr-review-dashboard.sqlite3-wal
+/pr-review-dashboard/pr-review-dashboard.sqlite3
+/pr-review-dashboard/pr-review-dashboard.sqlite3-shm
+/pr-review-dashboard/pr-review-dashboard.sqlite3-wal
+/pr-review-dashboard/pr-review-dashboard.toml
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

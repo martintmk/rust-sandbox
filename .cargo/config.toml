@@ -1,0 +1,5 @@
+[env]
+# The dashboard deliberately uses the already-installed Copilot CLI. Avoid the
+# SDK build script downloading a second copy; runtime resolution supplies the
+# installed executable explicitly.
+COPILOT_SKIP_CLI_DOWNLOAD = "1"

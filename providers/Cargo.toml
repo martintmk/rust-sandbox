@@ -1,0 +1,39 @@
+[package]
+name = "providers"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GitHub and Azure DevOps pull request providers"
+readme = "README.md"
+keywords = ["azure-devops", "github", "pull-request"]
+categories = ["api-bindings", "development-tools"]
+
+[dependencies]
+azure_core = "1.1.0"
+azure_devops_rust_api = { version = "0.39.1", features = ["git"] }
+azure_identity = { version = "1.0.0", features = ["tokio"] }
+http = "1.1.0"
+octocrab = { version = "0.54.1", default-features = false, features = [
+    "default-client",
+    "follow-redirect",
+    "jwt-aws-lc-rs",
+    "retry",
+    "rustls",
+    "rustls-ring",
+    "timeout",
+    "tracing",
+] }
+ohno = "0.4.0"
+serde_json = "1.0.151"
+tick = { version = "0.5.0", default-features = false, features = ["tokio"] }
+time = { version = "0.3.55", default-features = false, features = ["formatting"] }
+tokio = { version = "1.53.1", features = ["process"] }
+
+[dev-dependencies]
+tick = { version = "0.5.0", default-features = false, features = ["test-util"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6.0"
+
+[lints]
+workspace = true

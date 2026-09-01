@@ -1,0 +1,54 @@
+[
+  {
+    "id": 9001,
+    "node_id": "PRR_reviewerone",
+    "html_url": "https://github.com/acme/widgets/pull/101#pullrequestreview-9001",
+    "state": "APPROVED",
+    "user": {
+      "login": "reviewer-one",
+      "id": 7001,
+      "node_id": "U_reviewerone",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7001",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/reviewer-one",
+      "html_url": "https://github.com/reviewer-one",
+      "followers_url": "https://api.github.com/users/reviewer-one/followers",
+      "following_url": "https://api.github.com/users/reviewer-one/following{/other_user}",
+      "gists_url": "https://api.github.com/users/reviewer-one/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/reviewer-one/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/reviewer-one/subscriptions",
+      "organizations_url": "https://api.github.com/users/reviewer-one/orgs",
+      "repos_url": "https://api.github.com/users/reviewer-one/repos",
+      "events_url": "https://api.github.com/users/reviewer-one/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/reviewer-one/received_events",
+      "type": "User",
+      "site_admin": false
+    }
+  },
+  {
+    "id": 9002,
+    "node_id": "PRR_reviewertwo",
+    "html_url": "https://github.com/acme/widgets/pull/101#pullrequestreview-9002",
+    "state": "CHANGES_REQUESTED",
+    "user": {
+      "login": "reviewer-two",
+      "id": 7002,
+      "node_id": "U_reviewertwo",
+      "avatar_url": "https://avatars.githubusercontent.com/u/7002",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/reviewer-two",
+      "html_url": "https://github.com/reviewer-two",
+      "followers_url": "https://api.github.com/users/reviewer-two/followers",
+      "following_url": "https://api.github.com/users/reviewer-two/following{/other_user}",
+      "gists_url": "https://api.github.com/users/reviewer-two/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/reviewer-two/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/reviewer-two/subscriptions",
+      "organizations_url": "https://api.github.com/users/reviewer-two/orgs",
+      "repos_url": "https://api.github.com/users/reviewer-two/repos",
+      "events_url": "https://api.github.com/users/reviewer-two/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/reviewer-two/received_events",
+      "type": "User",
+      "site_admin": false
+    }
+  }
+]

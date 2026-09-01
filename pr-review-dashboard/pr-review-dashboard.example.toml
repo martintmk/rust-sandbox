@@ -1,0 +1,38 @@
+# The server must use a nonzero loopback socket.
+[server]
+bind = "127.0.0.1:8787"
+
+# Relative paths are resolved from the process working directory.
+[storage]
+sqlite_path = "data/pr-review-dashboard.sqlite3"
+
+[polling]
+interval_seconds = 300
+max_concurrent_polls = 4
+max_concurrent_copilot_jobs = 2
+
+# Optional. Omit either value to use the built-in prompt.
+[prompts]
+overview = """
+Summarize the pull request's intent, scope, and notable risk areas.
+"""
+interesting = """
+Decide whether this change needs maintainer attention. Prioritize correctness,
+security, public API compatibility, and dependency impact.
+"""
+
+# Repeat this table for every GitHub or Azure DevOps repository. The provider
+# and repository coordinates are derived from the URL.
+[[repositories]]
+url = "https://github.com/YOUR_GITHUB_ORGANIZATION/YOUR_GITHUB_REPOSITORY"
+# The app never updates this checkout. TOML literal strings are convenient on Windows.
+# checkout_path = 'D:\src\your-github-repository'
+
+[[repositories]]
+url = "https://dev.azure.com/YOUR_ADO_ORGANIZATION/YOUR_ADO_PROJECT/_git/YOUR_ADO_REPOSITORY"
+# checkout_path = 'D:\src\your-ado-repository'
+
+# Only review uses an external skill. The built-in default is `review-lens`;
+# override it with any unique enabled skill reported by `copilot skill list --json`.
+[actions.review]
+skill = "review-lens"

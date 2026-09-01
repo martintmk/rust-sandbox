@@ -1,0 +1,17 @@
+{
+  "count": 1,
+  "value": [
+    {
+      "pullRequestId": 44,
+      "title": "Document configuration options",
+      "status": "active",
+      "isDraft": false,
+      "createdBy": { "id": "user-3", "displayName": "Grace Hopper", "uniqueName": "grace@contoso.com" },
+      "creationDate": "2024-05-03T14:00:00Z",
+      "sourceRefName": "refs/heads/docs/config",
+      "targetRefName": "refs/heads/main",
+      "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1/pullRequests/44",
+      "repository": { "id": "repo-guid-1", "name": "widgets", "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1", "project": { "name": "Contoso", "visibility": "private" } }
+    }
+  ]
+}

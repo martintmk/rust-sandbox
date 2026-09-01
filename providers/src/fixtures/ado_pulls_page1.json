@@ -1,0 +1,30 @@
+{
+  "count": 2,
+  "value": [
+    {
+      "pullRequestId": 42,
+      "title": "Add retry policy to fetch pipeline",
+      "status": "active",
+      "isDraft": false,
+      "createdBy": { "id": "user-1", "displayName": "Ada Lovelace", "uniqueName": "ada@contoso.com" },
+      "creationDate": "2024-05-01T12:00:00Z",
+      "sourceRefName": "refs/heads/feature/retry",
+      "targetRefName": "refs/heads/main",
+      "lastMergeSourceCommit": { "commitId": "abc123sourcecommit" },
+      "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1/pullRequests/42",
+      "repository": { "id": "repo-guid-1", "name": "widgets", "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1", "project": { "name": "Contoso", "visibility": "private" } }
+    },
+    {
+      "pullRequestId": 43,
+      "title": "WIP: refactor storage layer",
+      "status": "active",
+      "isDraft": true,
+      "createdBy": { "id": "user-2", "displayName": "Alan Turing", "uniqueName": "alan@contoso.com" },
+      "creationDate": "2024-05-02T09:30:00Z",
+      "sourceRefName": "refs/heads/refactor/storage",
+      "targetRefName": "refs/heads/main",
+      "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1/pullRequests/43",
+      "repository": { "id": "repo-guid-1", "name": "widgets", "url": "https://dev.azure.com/contoso/_apis/git/repositories/repo-guid-1", "project": { "name": "Contoso", "visibility": "private" } }
+    }
+  ]
+}

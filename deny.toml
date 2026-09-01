@@ -25,6 +25,17 @@ allow = [
 confidence-threshold = 0.93
 # <<< anvil-managed: anvil-deny-licenses
 
+# Narrowly scoped, non-anvil license exception (placed outside the anvil-managed
+# sentinel above so regeneration will not clobber it, while TOML still attaches
+# it to the [licenses] table). `webpki-root-certs` (CDLA-Permissive-2.0) is a
+# leaf transitive dependency of Microsoft's mandated `azure_devops_rust_api`
+# reqwest transport (via rustls-platform-verifier) and cannot be dropped without
+# abandoning the official Azure DevOps SDK. The exception is pinned to that one
+# crate/license pair only.
+exceptions = [
+    { name = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+]
+
 # >>> anvil-managed: anvil-deny-bans
 [bans]
 multiple-versions = "warn"

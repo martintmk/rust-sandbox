@@ -1,0 +1,26 @@
+[server]
+bind = "127.0.0.1:8787"
+
+[storage]
+sqlite_path = "pr-review-dashboard.sqlite3"
+
+[polling]
+interval_seconds = 300
+max_concurrent_polls = 4
+max_concurrent_copilot_jobs = 2
+
+[prompts]
+overview = """
+Summarize the pull request's intent, scope, and notable risk areas.
+"""
+interesting = """
+Decide whether this pull request deserves maintainer attention. Prioritize Rust
+public API changes, correctness, cancellation, dependency and semantic-versioning
+impact, performance, tests, and user-facing documentation.
+"""
+
+[[repositories]]
+url = "https://github.com/microsoft/oxidizer"
+
+[actions.review]
+skill = "review-lens"
