@@ -35,12 +35,10 @@ use crate::limits::FormatLimits;
 
 /// Brotli's default bounds.
 ///
-/// Brotli has no structural expansion ceiling: measured on ordinary repetitive input it reaches
-/// 9 000x for a repeated short string, 10 900x for repetitive JSON, 21 000x for a repeated sentence
-/// and 80 660x for 1 MiB of zeros — all legitimate data. A deflate-shaped bound rejects every one of
-/// them, so brotli needs its own, and even this one is a coarse backstop rather than real
-/// protection.
-const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(Some(250_000), None);
+/// Brotli has no structural expansion ceiling, so a ratio bound cannot distinguish a bomb from
+/// legitimate highly-compressible data. Callers handling untrusted input should set an absolute
+/// output limit based on how much data they can afford to buffer.
+const DEFAULT_LIMITS: FormatLimits = FormatLimits::new(None, None);
 use crate::format::macros::define_format;
 
 define_format! {

@@ -409,9 +409,12 @@ impl Pump {
 
             if consumed == 0 && produced == 0 {
                 if self.state == State::Finishing {
-                    // There is room to write and no more input is coming, yet the engine cannot
-                    // finish the stream: the input ended part-way through a container.
-                    return Err(self.fail(Error::unexpected_end_of_stream()));
+                    let error = if self.streams == 0 {
+                        Error::unexpected_end_of_stream()
+                    } else {
+                        Error::corrupt_data("trailing data did not form a complete compressed stream")
+                    };
+                    return Err(self.fail(error));
                 }
 
                 if self.input.is_empty() && self.state == State::Open {

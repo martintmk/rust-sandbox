@@ -60,7 +60,7 @@ impl<T> Limit<T> {
 /// | Format | Default ratio bound | Why |
 /// |---|---|---|
 /// | `deflate`, `zlib`, `gzip` | 1100x | deflate cannot expand further than about 1032x; that is structural |
-/// | `brotli` | 250 000x | brotli reaches 80 660x on a megabyte of zeros, and 21 028x on a repeated sentence — all legitimate |
+/// | `brotli` | none | brotli has no structural ceiling, so any ratio bound rejects sufficiently compressible legitimate data |
 /// | `zstd` | 250 000x | zstd has no structural ceiling either, so it needs the same loose bound |
 ///
 /// No format caps total output size or stream count by default, so a multi-gigabyte or
@@ -253,6 +253,10 @@ impl FormatLimits {
         self.output_len.map(|maximum| maximum.saturating_sub(output_len))
     }
 
+    #[cfg_attr(
+        not(any(feature = "brotli", feature = "deflate", feature = "gzip", feature = "zlib", feature = "zstd")),
+        expect(dead_code, reason = "no decompression engine reads the stream limit when no format is enabled")
+    )]
     pub(crate) fn max_streams(self) -> Option<u64> {
         self.streams
     }

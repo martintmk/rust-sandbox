@@ -37,7 +37,7 @@ fn poll_compression<S, C, E>(
 where
     S: Stream<Item = std::result::Result<BytesView, E>>,
     C: Compression + ?Sized,
-    E: std::error::Error + Send + Sync + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     if *finished {
         return Poll::Ready(None);
@@ -154,10 +154,10 @@ where
     ///
     /// # Security
     ///
-    /// A decompressor built with its format's `new` applies
-    /// [`DecompressionLimits::new()`][crate::DecompressionLimits::new()], which bounds the
-    /// expansion ratio but not the total output. For an untrusted source, build the decompressor with
-    /// its `builder` and set a limit the caller can actually afford.
+    /// A decompressor built with its format's `new` applies that format's default
+    /// [`DecompressionLimits`][crate::DecompressionLimits]. These defaults do not bound total output,
+    /// and Brotli has no default ratio bound. For an untrusted source, build the decompressor with its
+    /// `builder` and set an absolute output limit the caller can actually afford.
     ///
     /// Output chunks are provisional until the stream ends, because a checksum or trailer can
     /// reject the compressed stream after earlier bytes have been returned.
@@ -206,7 +206,7 @@ impl<S, C, E> Stream for CompressionStream<S, C>
 where
     S: Stream<Item = std::result::Result<BytesView, E>>,
     C: Compression,
-    E: std::error::Error + Send + Sync + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     type Item = Result<BytesView>;
 
@@ -341,6 +341,20 @@ mod tests {
             std::error::Error::source(&error).map(ToString::to_string),
             Some("transport died".to_owned()),
             "the original failure should remain reachable"
+        );
+    }
+
+    #[test]
+    fn accepts_source_errors_convertible_to_a_boxed_error() {
+        let failing = stream::iter(vec![Err("transport died".to_owned())]);
+
+        let error = collect(CompressionStream::compress(failing, gzip::Compressor::new(GlobalPool::new())))
+            .expect_err("the source failure surfaces");
+
+        assert!(error.is_source(), "got {error}");
+        assert_eq!(
+            std::error::Error::source(&error).map(ToString::to_string),
+            Some("transport died".to_owned())
         );
     }
 

@@ -135,7 +135,8 @@
 //! so the deflate family defaults to 1100x and never rejects data it could legitimately have
 //! produced. Brotli has no such ceiling: measured on ordinary repetitive input it reaches 9 000x
 //! for a repeated short string, 21 000x for a repeated sentence and 80 660x for a megabyte of
-//! zeros, so it defaults to 250 000x.
+//! zeros. It therefore has no default ratio limit; callers handling untrusted Brotli input must set
+//! an absolute output limit.
 //!
 //! [`DecompressionLimits`] carries *overrides*, not values: bounds you leave unset keep the
 //! format's default, so [`DecompressionLimits::default()`] never silently imposes one format's

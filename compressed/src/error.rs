@@ -112,8 +112,10 @@ impl Error {
     }
 
     #[cfg(feature = "futures-stream")]
-    pub(crate) fn source(source: impl StdError + Send + Sync + 'static) -> Self {
-        Self::new(Kind::Source, "the underlying stream failed").with_source(source)
+    pub(crate) fn source(source: impl Into<Box<dyn StdError + Send + Sync>>) -> Self {
+        let mut error = Self::new(Kind::Source, "the underlying stream failed");
+        error.source = Some(source.into());
+        error
     }
 }
 

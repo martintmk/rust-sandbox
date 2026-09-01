@@ -1053,6 +1053,26 @@ macro_rules! format_contract {
             }
 
             #[test]
+            fn incomplete_trailing_stream_is_corrupt_data() {
+                let memory = GlobalPool::new();
+                let compressed = $module::compress(view(&payload()), memory.clone()).expect("compress");
+                let joined = BytesView::from_views([compressed, view(&[0])]);
+                let mut decompressor = $module::Decompressor::builder().multi_stream(true).build(memory);
+                decompressor.push(joined).expect("push succeeds");
+                decompressor.end_input();
+
+                let error = loop {
+                    match decompressor.pull() {
+                        Ok(Output::Data(_) | Output::Progress) => {}
+                        Ok(_) => panic!("incomplete trailing stream unexpectedly completed"),
+                        Err(error) => break error,
+                    }
+                };
+
+                assert!(error.is_corrupt_data(), "got {error}");
+            }
+
+            #[test]
             fn stream_count_limit_rejects_before_decompressing_the_next_stream() {
                 let memory = GlobalPool::new();
                 let data = payload();
@@ -1259,6 +1279,17 @@ mod format_specific_settings {
     use compressed::brotli::{Mode, Quality, WindowSize};
 
     use super::*;
+
+    #[test]
+    fn default_limits_accept_the_compressors_own_high_ratio_output() {
+        let memory = GlobalPool::new();
+        let data = vec![0_u8; 4 * 1024 * 1024];
+        let compressed = brotli::compress(view(&data), memory.clone()).expect("compression succeeds");
+
+        let plain = brotli::decompress(compressed, memory).expect("default limits accept valid brotli");
+
+        assert_eq!(plain.to_vec(), data);
+    }
 
     #[test]
     fn a_format_specific_setting_still_produces_a_conforming_stream() {
