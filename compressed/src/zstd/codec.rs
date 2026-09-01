@@ -291,4 +291,53 @@ mod tests {
 
         assert_eq!(initialize(&mut raw), &[0_u8; 8]);
     }
+
+    #[test]
+    fn native_error_helpers_keep_compression_and_decompression_distinct() {
+        assert!(compression_failed(0).is_invalid_state());
+        assert!(decompression_failed(0).is_corrupt_data());
+    }
+
+    #[test]
+    fn configuration_errors_surface_before_entering_native_state() {
+        let mut compressor = ZstdCompress::new(Level::DEFAULT, CompressorOptions::default(), None);
+        compressor.configuration_error = Some(Error::invalid_configuration("compressor config"));
+        let mut output = [MaybeUninit::uninit(); 8];
+        assert!(
+            compressor
+                .step(b"input", &mut output, Operation::Process)
+                .expect_err("compressor configuration fails")
+                .is_invalid_configuration()
+        );
+
+        let mut decompressor = ZstdDecompress::new(
+            FormatLimits::new(None, None),
+            false,
+            TrailingData::Reject,
+            DecompressorOptions::default(),
+            None,
+        );
+        decompressor.configuration_error = Some(Error::invalid_configuration("decompressor config"));
+        assert!(
+            decompressor
+                .step(b"input", &mut output, Operation::Process)
+                .expect_err("decompressor configuration fails")
+                .is_invalid_configuration()
+        );
+    }
+
+    #[test]
+    fn decompressor_debug_includes_its_policies() {
+        let codec = ZstdDecompress::new(
+            FormatLimits::new(None, None),
+            false,
+            TrailingData::Reject,
+            DecompressorOptions::default(),
+            None,
+        );
+        let rendered = format!("{codec:?}");
+
+        assert!(rendered.contains("trailing_data"));
+        assert!(rendered.contains("Reject"));
+    }
 }

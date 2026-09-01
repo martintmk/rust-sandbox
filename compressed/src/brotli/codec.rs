@@ -256,4 +256,25 @@ mod tests {
 
         assert_eq!(initialized, &[0_u8; 8]);
     }
+
+    #[test]
+    fn rejected_configuration_surfaces_on_first_step() {
+        let mut codec = BrotliCompress::new(Level::DEFAULT, CompressorOptions::default());
+        codec.configuration_valid = false;
+        let mut output = [MaybeUninit::uninit(); 8];
+
+        let error = codec
+            .step(b"input", &mut output, Operation::Process)
+            .expect_err("invalid configuration is reported");
+        assert!(error.is_invalid_configuration(), "got {error}");
+    }
+
+    #[test]
+    fn decompressor_debug_includes_its_policies() {
+        let codec = BrotliDecompress::new(FormatLimits::new(None, None), false, TrailingData::Reject);
+        let rendered = format!("{codec:?}");
+
+        assert!(rendered.contains("trailing_data"));
+        assert!(rendered.contains("Reject"));
+    }
 }

@@ -548,6 +548,147 @@ mod tests {
     }
 
     #[test]
+    fn empty_flush_completes_without_output() {
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.flush().expect("flush request succeeds");
+
+        assert!(
+            pump.pull(&mut Passthrough::default())
+                .expect("empty flush succeeds")
+                .is_need_input()
+        );
+        pump.flush().expect("a completed flush can be requested again");
+    }
+
+    #[test]
+    fn rejects_input_and_final_flush_while_flushing() {
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.flush().expect("flush request succeeds");
+
+        assert!(pump.push(view(b"late")).expect_err("push is rejected").is_invalid_state());
+        pump.end_input();
+        assert!(
+            pump.flush()
+                .expect_err("another flush after end_input is rejected")
+                .is_invalid_state()
+        );
+    }
+
+    #[test]
+    fn failed_codecs_reject_every_later_operation() {
+        #[derive(Debug)]
+        struct Fails;
+
+        impl Codec for Fails {
+            fn step(&mut self, _input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Err(Error::corrupt_data("failed"))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        assert!(pump.pull(&mut Fails).expect_err("codec fails").is_corrupt_data());
+        pump.end_input();
+
+        assert!(pump.push(view(b"late")).expect_err("push is rejected").is_invalid_state());
+        assert!(pump.flush().expect_err("flush is rejected").is_invalid_state());
+        assert!(pump.pull(&mut Fails).expect_err("pull is rejected").is_invalid_state());
+    }
+
+    #[test]
+    fn rejects_an_unrequested_flush_completion() {
+        #[derive(Debug)]
+        struct SpuriousFlush;
+
+        impl Codec for SpuriousFlush {
+            fn step(&mut self, _input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Ok((Step::FlushComplete, 0, 0))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        assert!(
+            pump.pull(&mut SpuriousFlush)
+                .expect_err("unrequested completion is rejected")
+                .is_invalid_state()
+        );
+    }
+
+    #[test]
+    fn propagates_stream_end_hook_failures() {
+        #[derive(Debug)]
+        struct BadEnd;
+
+        impl Codec for BadEnd {
+            fn step(&mut self, input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Ok((Step::StreamEnd, input.len(), 0))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Err(Error::invalid_state("cannot reset"))
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(b"input")).expect("push succeeds");
+        assert!(
+            pump.pull(&mut BadEnd)
+                .expect_err("stream-end hook failure propagates")
+                .is_invalid_state()
+        );
+    }
+
+    #[test]
+    fn await_eof_completes_when_end_was_already_signalled() {
+        #[derive(Debug)]
+        struct StrictEnd;
+
+        impl Codec for StrictEnd {
+            fn step(&mut self, input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Ok((Step::StreamEnd, input.len(), 0))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::AwaitEof)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(b"input")).expect("push succeeds");
+        pump.end_input();
+
+        assert!(pump.pull(&mut StrictEnd).expect("strict stream completes").is_done());
+    }
+
+    #[test]
+    fn no_progress_with_pending_input_is_terminal() {
+        #[derive(Debug)]
+        struct Stalled;
+
+        impl Codec for Stalled {
+            fn step(&mut self, _input: &[u8], _output: &mut [MaybeUninit<u8>], _operation: Operation) -> Result<(Step, usize, usize)> {
+                Ok((Step::Continue, 0, 0))
+            }
+
+            fn stream_ended(&mut self) -> Result<StreamEnd> {
+                Ok(StreamEnd::Complete)
+            }
+        }
+
+        let mut pump = Pump::new(GlobalPool::new(), chunk(64));
+        pump.push(view(b"input")).expect("push succeeds");
+
+        assert!(pump.pull(&mut Stalled).expect_err("a stalled codec is rejected").is_invalid_state());
+    }
+
+    #[test]
     fn rejects_a_second_push_while_input_is_pending() {
         let mut pump = Pump::new(GlobalPool::new(), chunk(64));
         pump.push(view(b"first")).expect("push succeeds");

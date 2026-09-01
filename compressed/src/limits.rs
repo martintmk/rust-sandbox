@@ -308,6 +308,10 @@ mod tests {
         let no_len = resolved(DecompressionLimits::new().without_max_output_len());
         assert_eq!(no_len.ratio, DEFAULTS.ratio);
         assert_eq!(no_len.output_len, None);
+
+        let no_streams = resolved(DecompressionLimits::new().without_max_streams());
+        assert_eq!(no_streams.ratio, DEFAULTS.ratio);
+        assert_eq!(no_streams.streams, None);
     }
 
     #[test]
