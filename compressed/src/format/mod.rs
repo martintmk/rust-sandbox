@@ -268,8 +268,8 @@ impl Format {
     /// # Errors
     ///
     /// Returns an error if the underlying compression engine fails.
-    pub fn compress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        self.compressor().build(memory).compress(input)
+    pub fn compress(&self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
+        (*self).compressor().build(memory).compress(input)
     }
 
     /// Decompresses a complete stream that is already in memory.
@@ -280,8 +280,8 @@ impl Format {
     /// # Errors
     ///
     /// Returns an error if the data is malformed, truncated, or exceeds the default limits.
-    pub fn decompress(self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
-        self.decompressor().build(memory).decompress(input)
+    pub fn decompress(&self, input: BytesView, memory: impl MemoryShared) -> Result<BytesView> {
+        (*self).decompressor().build(memory).decompress(input)
     }
 }
 
